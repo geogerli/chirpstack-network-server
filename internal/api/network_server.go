@@ -532,6 +532,38 @@ func (n *NetworkServerAPI) CreateDevice(ctx context.Context, req *ns.CreateDevic
 	return &empty.Empty{}, nil
 }
 
+func (n *NetworkServerAPI) BatchCreateDevice(ctx context.Context, req *ns.BatchCreateDeviceRequest) (*empty.Empty, error) {
+	if req.Devices == nil || len(req.Devices) <= 0 {
+		return nil, grpc.Errorf(codes.InvalidArgument, "device must not be nil")
+	}
+	var sds []*storage.Device
+	for index,_ := range req.Devices {
+		ds := req.Devices[index]
+		var devEUI lorawan.EUI64
+		var dpID, spID, rpID uuid.UUID
+
+		copy(devEUI[:], ds.DevEui)
+		copy(dpID[:], ds.DeviceProfileId)
+		copy(rpID[:], ds.RoutingProfileId)
+		copy(spID[:], ds.ServiceProfileId)
+
+		d := storage.Device{
+			DevEUI:            devEUI,
+			DeviceProfileID:   dpID,
+			ServiceProfileID:  spID,
+			RoutingProfileID:  rpID,
+			SkipFCntCheck:     ds.SkipFCntCheck,
+			ReferenceAltitude: ds.ReferenceAltitude,
+		}
+		sds = append(sds,&d)
+	}
+	if err := storage.BatchCreateDevice(ctx, storage.DB().DB, sds); err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	return &empty.Empty{}, nil
+}
+
 // GetDevice returns the device matching the given DevEUI.
 func (n *NetworkServerAPI) GetDevice(ctx context.Context, req *ns.GetDeviceRequest) (*ns.GetDeviceResponse, error) {
 	var devEUI lorawan.EUI64
@@ -696,6 +728,89 @@ func (n *NetworkServerAPI) ActivateDevice(ctx context.Context, req *ns.ActivateD
 	return &empty.Empty{}, nil
 }
 
+// BatchActivateDevice activates a device (ABP).
+func (n *NetworkServerAPI) BatchActivateDevice(ctx context.Context, req *ns.BatchActivateDeviceRequest) (*empty.Empty, error) {
+	if req.DevicesActivation == nil || len(req.DevicesActivation) <= 0 {
+		return nil, grpc.Errorf(codes.InvalidArgument, "device_activation must not be nil")
+	}
+	da := req.DevicesActivation[0]
+	var devEUI lorawan.EUI64
+	copy(devEUI[:], da.DevEui)
+	d, err := storage.GetDevice(ctx, storage.DB(), devEUI)
+
+	if err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	dp, err := storage.GetDeviceProfile(ctx, storage.DB(), d.DeviceProfileID)
+	if err != nil {
+		return nil, errToRPCError(err)
+	}
+	var devs []*storage.Device
+	var devsEUI []lorawan.EUI64
+	for index,_ := range req.DevicesActivation {
+		deviceActivation := req.DevicesActivation[index]
+
+		var devEUI lorawan.EUI64
+		var devAddr lorawan.DevAddr
+		var sNwkSIntKey, fNwkSIntKey, nwkSEncKey lorawan.AES128Key
+
+		copy(devEUI[:], deviceActivation.DevEui)
+		copy(devAddr[:], deviceActivation.DevAddr)
+		copy(sNwkSIntKey[:], deviceActivation.SNwkSIntKey)
+		copy(fNwkSIntKey[:], deviceActivation.FNwkSIntKey)
+		copy(nwkSEncKey[:], deviceActivation.NwkSEncKey)
+
+		ds := storage.DeviceSession{
+			DeviceProfileID:  d.DeviceProfileID,
+			ServiceProfileID: d.ServiceProfileID,
+			RoutingProfileID: d.RoutingProfileID,
+
+			DevEUI:             devEUI,
+			DevAddr:            devAddr,
+			SNwkSIntKey:        sNwkSIntKey,
+			FNwkSIntKey:        fNwkSIntKey,
+			NwkSEncKey:         nwkSEncKey,
+			FCntUp:             deviceActivation.FCntUp,
+			NFCntDown:          deviceActivation.NFCntDown,
+			AFCntDown:          deviceActivation.AFCntDown,
+			SkipFCntValidation: deviceActivation.SkipFCntCheck || d.SkipFCntCheck,
+
+			RXWindow: storage.RX1,
+
+			MACVersion: dp.MACVersion,
+		}
+		dev := d
+		dev.DevEUI = devEUI
+		// The device is never set to DeviceModeB because the device first needs to
+		// aquire a Class-B beacon lock and will signal this to the network-server.
+		if dp.SupportsClassC {
+			dev.Mode = storage.DeviceModeC
+		} else {
+			dev.Mode = storage.DeviceModeA
+		}
+		// reset the device-session to the device boot parameters
+		ds.ResetToBootParameters(dp)
+		if err := storage.SaveDeviceSession(ctx, storage.RedisPool(), ds); err != nil {
+			return nil, errToRPCError(err)
+		}
+		if err := storage.FlushMACCommandQueue(ctx, storage.RedisPool(), ds.DevEUI); err != nil {
+			return nil, errToRPCError(err)
+		}
+		devs = append(devs,&dev)
+		devsEUI = append(devsEUI,devEUI)
+	}
+	if err := storage.BatchUpdateDevice(ctx, storage.DB().DB, devs); err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	if err := storage.BatchFlushDeviceQueueForDevsEUI(ctx, storage.DB().DB, devsEUI); err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	return &empty.Empty{}, nil
+}
+
 // DeactivateDevice de-activates a device.
 func (n *NetworkServerAPI) DeactivateDevice(ctx context.Context, req *ns.DeactivateDeviceRequest) (*empty.Empty, error) {
 	var devEUI lorawan.EUI64
@@ -706,6 +821,25 @@ func (n *NetworkServerAPI) DeactivateDevice(ctx context.Context, req *ns.Deactiv
 	}
 
 	if err := storage.FlushDeviceQueueForDevEUI(ctx, storage.DB(), devEUI); err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	return &empty.Empty{}, nil
+}
+
+// BatchDeactivateDevice de-activates a device.
+func (n *NetworkServerAPI) BatchDeactivateDevice(ctx context.Context, req *ns.BatchDeactivateDeviceRequest) (*empty.Empty, error) {
+	var devsEUI []lorawan.EUI64
+	for index,_ := range req.DevsEui {
+		DevEui := req.DevsEui[index]
+		var devEUI lorawan.EUI64
+		copy(devEUI[:], DevEui)
+		if err := storage.DeleteDeviceSession(ctx, storage.RedisPool(), devEUI); err != nil {
+			return nil, errToRPCError(err)
+		}
+		devsEUI = append(devsEUI,devEUI)
+	}
+	if err := storage.BatchFlushDeviceQueueForDevsEUI(ctx, storage.DB().DB, devsEUI); err != nil {
 		return nil, errToRPCError(err)
 	}
 

@@ -191,6 +191,45 @@ func FlushDeviceQueueForDevEUI(ctx context.Context, db sqlx.Execer, devEUI loraw
 	return nil
 }
 
+// BatchFlushDeviceQueueForDevEUI deletes all device-queue items for the given DevEUI.
+func BatchFlushDeviceQueueForDevsEUI(ctx context.Context, db *sqlx.DB, devsEUI []lorawan.EUI64) error {
+	tx, err := db.Beginx()
+	if err != nil {
+		return handlePSQLError(err, "Beginx error")
+	}
+	stmt, err := tx.Preparex(tx.Rebind(`delete from device_queue where dev_eui = $1`))
+	if err != nil {
+		_ = tx.Rollback()
+		return handlePSQLError(err, "Preparex error")
+	}
+
+	for index,_ := range devsEUI {
+		devEUI := devsEUI[index]
+		_,err := stmt.Exec(devEUI[:])
+		if err != nil {
+			_ = stmt.Close()
+			_ = tx.Rollback()
+			return handlePSQLError(err, "delete error")
+		}
+		log.WithFields(log.Fields{
+			"ctx_id":  ctx.Value(logging.ContextIDKey),
+			"dev_eui": devEUI,
+		}).Info("device-queue flushed")
+	}
+	err = stmt.Close()
+	if err != nil {
+		_ = tx.Rollback()
+		return handlePSQLError(err, "stmt close error")
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		_ = tx.Rollback()
+		return handlePSQLError(err, "tx commit error")
+	}
+	return nil
+}
+
 // GetNextDeviceQueueItemForDevEUI returns the next device-queue item for the
 // given DevEUI, ordered by f_cnt (note that the f_cnt should never roll over).
 func GetNextDeviceQueueItemForDevEUI(ctx context.Context, db sqlx.Queryer, devEUI lorawan.EUI64) (DeviceQueueItem, error) {

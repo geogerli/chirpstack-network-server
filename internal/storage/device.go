@@ -89,6 +89,70 @@ func CreateDevice(ctx context.Context, db sqlx.Execer, d *Device) error {
 	return nil
 }
 
+
+// BatchCreateDevice creates the given device.
+func BatchCreateDevice(ctx context.Context, db *sqlx.DB, ds []*Device) error {
+	tx, err := db.Beginx()
+	if err != nil {
+		return handlePSQLError(err, "Beginx error")
+	}
+	stmt, err := tx.Preparex(tx.Rebind(`
+		insert into device (
+			dev_eui,
+			created_at,
+			updated_at,
+			device_profile_id,
+			service_profile_id,
+			routing_profile_id,
+			skip_fcnt_check,
+			reference_altitude,
+			mode
+		) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`))
+	if err != nil {
+		_ = tx.Rollback()
+		return handlePSQLError(err, "Preparex error")
+	}
+
+	for index,_ := range ds {
+		d := ds[index]
+		now := time.Now()
+		d.CreatedAt = now
+		d.UpdatedAt = now
+		_,err := stmt.Exec(
+			d.DevEUI[:],
+			d.CreatedAt,
+			d.UpdatedAt,
+			d.DeviceProfileID,
+			d.ServiceProfileID,
+			d.RoutingProfileID,
+			d.SkipFCntCheck,
+			d.ReferenceAltitude,
+			d.Mode)
+		if err != nil {
+			_ = stmt.Close()
+			_ = tx.Rollback()
+			return handlePSQLError(err, "insert error")
+		}
+		log.WithFields(log.Fields{
+			"dev_eui": d.DevEUI,
+			"ctx_id":  ctx.Value(logging.ContextIDKey),
+		}).Info("device created")
+	}
+	err = stmt.Close()
+	if err != nil {
+		_ = tx.Rollback()
+		return handlePSQLError(err, "stmt close error")
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		_ = tx.Rollback()
+		return handlePSQLError(err, "tx commit error")
+	}
+	return nil
+}
+
+
 // GetDevice returns the device matching the given DevEUI.
 func GetDevice(ctx context.Context, db sqlx.Queryer, devEUI lorawan.EUI64) (Device, error) {
 	var d Device
@@ -138,6 +202,64 @@ func UpdateDevice(ctx context.Context, db sqlx.Execer, d *Device) error {
 		"dev_eui": d.DevEUI,
 		"ctx_id":  ctx.Value(logging.ContextIDKey),
 	}).Info("device updated")
+	return nil
+}
+
+// BatchUpdateDevice updates the given device.
+func BatchUpdateDevice(ctx context.Context, db *sqlx.DB, ds []*Device) error {
+	tx, err := db.Beginx()
+	if err != nil {
+		return handlePSQLError(err, "Beginx error")
+	}
+	stmt, err := tx.Preparex(tx.Rebind(`
+		update device set
+			updated_at = $2,
+			device_profile_id = $3,
+			service_profile_id = $4,
+			routing_profile_id = $5,
+			skip_fcnt_check = $6,
+			reference_altitude = $7,
+			mode = $8
+		where
+			dev_eui = $1`))
+	if err != nil {
+		_ = tx.Rollback()
+		return handlePSQLError(err, "Preparex error")
+	}
+
+	for index,_ := range ds {
+		d := ds[index]
+		d.UpdatedAt = time.Now()
+		_,err := stmt.Exec(
+			d.DevEUI[:],
+			d.UpdatedAt,
+			d.DeviceProfileID,
+			d.ServiceProfileID,
+			d.RoutingProfileID,
+			d.SkipFCntCheck,
+			d.ReferenceAltitude,
+			d.Mode)
+		if err != nil {
+			_ = stmt.Close()
+			_ = tx.Rollback()
+			return handlePSQLError(err, "update error")
+		}
+		log.WithFields(log.Fields{
+			"dev_eui": d.DevEUI,
+			"ctx_id":  ctx.Value(logging.ContextIDKey),
+		}).Info("device updated")
+	}
+	err = stmt.Close()
+	if err != nil {
+		_ = tx.Rollback()
+		return handlePSQLError(err, "stmt close error")
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		_ = tx.Rollback()
+		return handlePSQLError(err, "tx commit error")
+	}
 	return nil
 }
 

@@ -50,6 +50,9 @@ service NetworkServerService {
     // CreateDevice creates the given device.
     rpc CreateDevice(CreateDeviceRequest) returns (google.protobuf.Empty) {}
 
+    // Batch createDevice creates the given device.
+    rpc BatchCreateDevice(BatchCreateDeviceRequest) returns (google.protobuf.Empty) {}
+
     // GetDevice returns the device matching the given DevEUI.
     rpc GetDevice(GetDeviceRequest) returns (GetDeviceResponse) {}
 
@@ -62,8 +65,14 @@ service NetworkServerService {
     // ActivateDevice activates a device (ABP).
     rpc ActivateDevice(ActivateDeviceRequest) returns (google.protobuf.Empty) {}
 
-    // DeactivateDevice de-activates a device.
+    // BatchActivateDevice activates a device (ABP).
+    rpc BatchActivateDevice(BatchActivateDeviceRequest) returns (google.protobuf.Empty) {}
+
+    // BatchDeactivateDevice de-activates a device.
     rpc DeactivateDevice(DeactivateDeviceRequest) returns (google.protobuf.Empty) {}
+
+    // BatchDeactivateDevice de-activates a device.
+    rpc BatchDeactivateDevice(BatchDeactivateDeviceRequest) returns (google.protobuf.Empty) {}
 
     // GetDeviceActivation returns the device activation details.
     rpc GetDeviceActivation(GetDeviceActivationRequest) returns (GetDeviceActivationResponse) {}
@@ -303,6 +312,11 @@ message CreateDeviceRequest {
     Device device = 1;
 }
 
+message BatchCreateDeviceRequest {
+    // Device object to create.
+    repeated Device devices = 1;
+}
+
 message GetDeviceRequest {
     // DevEUI.
     bytes dev_eui = 1;
@@ -363,9 +377,19 @@ message ActivateDeviceRequest {
     DeviceActivation device_activation = 1;
 }
 
+message BatchActivateDeviceRequest {
+    // Device-activation to activate a device (ABP).
+    repeated DeviceActivation devices_activation = 1;
+}
+
 message DeactivateDeviceRequest {
     // Device EUI (8 bytes).
     bytes dev_eui = 1;
+}
+
+message BatchDeactivateDeviceRequest {
+    // Device EUI (8 bytes).
+    repeated bytes devs_eui = 1;
 }
 
 message GetDeviceActivationRequest {
