@@ -284,6 +284,10 @@ func GetRandomDevAddr(netID lorawan.NetID) (lorawan.DevAddr, error) {
 // After a succesful validation of the FCntUp and the MIC, don't forget
 // to synchronize the Node FCntUp with the packet FCnt.
 func ValidateAndGetFullFCntUp(s DeviceSession, fCntUp uint32) (uint32, bool) {
+	// case device reboot
+	if fCntUp == 0 && s.FCntUp > 0 {
+		return 0,true
+	}
 	// we need to compare the difference of the 16 LSB
 	gap := uint32(uint16(fCntUp) - uint16(s.FCntUp%65536))
 	if gap < band.Band().GetDefaults().MaxFCntGap {

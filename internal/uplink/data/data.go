@@ -29,7 +29,7 @@ import (
 	"github.com/brocaar/lorawan"
 )
 
-const applicationClientTimeout = time.Second
+const applicationClientTimeout = 3 * time.Second
 
 var tasks = []func(*dataContext) error{
 	setContextFromDataPHYPayload,
@@ -641,6 +641,10 @@ func sendFRMPayloadToApplicationServer(ctx *dataContext) error {
 }
 
 func syncUplinkFCnt(ctx *dataContext) error {
+	// case device reboot
+	if ctx.MACPayload.FHDR.FCnt == 0 && ctx.DeviceSession.FCntUp > 0 {
+		ctx.DeviceSession.FCntUp = 0
+	}
 	// sync counter with that of the device + 1
 	ctx.DeviceSession.FCntUp = ctx.MACPayload.FHDR.FCnt + 1
 	return nil
