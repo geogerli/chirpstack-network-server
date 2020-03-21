@@ -148,6 +148,9 @@ service NetworkServerService {
     // AddDeviceToMulticastGroup adds the given device to the given multicast-group.
     rpc AddDeviceToMulticastGroup(AddDeviceToMulticastGroupRequest) returns (google.protobuf.Empty) {}
 
+    // BatchAddDeviceToMulticastGroup adds the given device to the given multicast-group.
+    rpc BatchAddDeviceToMulticastGroup(BatchAddDeviceToMulticastGroupRequest) returns (google.protobuf.Empty) {}
+
     // RemoveDeviceFromMulticastGroup removes the given device from the given multicast-group.
     rpc RemoveDeviceFromMulticastGroup(RemoveDeviceFromMulticastGroupRequest) returns (google.protobuf.Empty) {}
 
@@ -794,6 +797,14 @@ message DeleteMulticastGroupRequest {
 message AddDeviceToMulticastGroupRequest {
     // Device EUI.
     bytes dev_eui = 1;
+
+    // Multicast-group ID.
+    bytes multicast_group_id = 2;
+}
+
+message BatchAddDeviceToMulticastGroupRequest {
+    // Device EUIs.
+    repeated bytes dev_euis = 1;
 
     // Multicast-group ID.
     bytes multicast_group_id = 2;

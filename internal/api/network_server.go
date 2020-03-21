@@ -1717,6 +1717,24 @@ func (n *NetworkServerAPI) AddDeviceToMulticastGroup(ctx context.Context, req *n
 	return &empty.Empty{}, nil
 }
 
+// AddDeviceToMulticastGroup adds the given device to the given multicast-group.
+func (n *NetworkServerAPI) BatchAddDeviceToMulticastGroup(ctx context.Context, req *ns.BatchAddDeviceToMulticastGroupRequest) (*empty.Empty, error) {
+	var devEUIs []lorawan.EUI64
+	for _,DevEui := range req.DevEuis {
+		var devEUI lorawan.EUI64
+		copy(devEUI[:], DevEui)
+		devEUIs = append(devEUIs,devEUI)
+	}
+	var mgID uuid.UUID
+	copy(mgID[:], req.MulticastGroupId)
+	if err := storage.BatchAddDeviceToMulticastGroup(ctx, storage.DB().DB, devEUIs, mgID); err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	return &empty.Empty{}, nil
+}
+
+
 // RemoveDeviceFromMulticastGroup removes the given device from the given multicast-group.
 func (n *NetworkServerAPI) RemoveDeviceFromMulticastGroup(ctx context.Context, req *ns.RemoveDeviceFromMulticastGroupRequest) (*empty.Empty, error) {
 	var devEUI lorawan.EUI64

@@ -642,7 +642,7 @@ func sendFRMPayloadToApplicationServer(ctx *dataContext) error {
 
 func syncUplinkFCnt(ctx *dataContext) error {
 	// case device reboot
-	if ctx.MACPayload.FHDR.FCnt == 0 && ctx.DeviceSession.FCntUp > 0 {
+	if ctx.MACPayload.FHDR.FCnt == 0 && ctx.DeviceSession.FCntUp%65536 != 0 {
 		ctx.DeviceSession.FCntUp = 0
 	}
 	// sync counter with that of the device + 1
