@@ -11,20 +11,22 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/brocaar/loraserver/api/gw"
-	gwbackend "github.com/brocaar/loraserver/internal/backend/gateway"
-	"github.com/brocaar/loraserver/internal/config"
-	"github.com/brocaar/loraserver/internal/downlink/ack"
-	"github.com/brocaar/loraserver/internal/framelog"
-	"github.com/brocaar/loraserver/internal/gateway"
-	"github.com/brocaar/loraserver/internal/helpers"
-	"github.com/brocaar/loraserver/internal/logging"
-	"github.com/brocaar/loraserver/internal/models"
-	"github.com/brocaar/loraserver/internal/storage"
-	"github.com/brocaar/loraserver/internal/uplink/data"
-	"github.com/brocaar/loraserver/internal/uplink/join"
-	"github.com/brocaar/loraserver/internal/uplink/proprietary"
-	"github.com/brocaar/loraserver/internal/uplink/rejoin"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-api/go/v3/nc"
+	"github.com/brocaar/chirpstack-network-server/internal/backend/controller"
+	gwbackend "github.com/brocaar/chirpstack-network-server/internal/backend/gateway"
+	"github.com/brocaar/chirpstack-network-server/internal/config"
+	"github.com/brocaar/chirpstack-network-server/internal/downlink/ack"
+	"github.com/brocaar/chirpstack-network-server/internal/framelog"
+	"github.com/brocaar/chirpstack-network-server/internal/gateway"
+	"github.com/brocaar/chirpstack-network-server/internal/helpers"
+	"github.com/brocaar/chirpstack-network-server/internal/logging"
+	"github.com/brocaar/chirpstack-network-server/internal/models"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
+	"github.com/brocaar/chirpstack-network-server/internal/uplink/data"
+	"github.com/brocaar/chirpstack-network-server/internal/uplink/join"
+	"github.com/brocaar/chirpstack-network-server/internal/uplink/proprietary"
+	"github.com/brocaar/chirpstack-network-server/internal/uplink/rejoin"
 	"github.com/brocaar/lorawan"
 )
 
@@ -153,46 +155,66 @@ func HandleDownlinkTXAcks(wg *sync.WaitGroup) {
 }
 
 func collectUplinkFrames(ctx context.Context, uplinkFrame gw.UplinkFrame) error {
-	return collectAndCallOnce(storage.RedisPool(), uplinkFrame, func(rxPacket models.RXPacket) error {
-		var uplinkIDs []uuid.UUID
-		for _, p := range rxPacket.RXInfoSet {
-			uplinkIDs = append(uplinkIDs, helpers.GetUplinkID(p))
+	return collectAndCallOnce(uplinkFrame, func(rxPacket models.RXPacket) error {
+		err := handleCollectedUplink(ctx, uplinkFrame, rxPacket)
+		if err != nil {
+			cause := errors.Cause(err)
+			if cause == storage.ErrDoesNotExist || cause == storage.ErrFrameCounterReset || cause == storage.ErrInvalidMIC || cause == storage.ErrFrameCounterRetransmission {
+				if _, err := controller.Client().HandleRejectedUplinkFrameSet(ctx, &nc.HandleRejectedUplinkFrameSetRequest{
+					FrameSet: &gw.UplinkFrameSet{
+						PhyPayload: uplinkFrame.PhyPayload,
+						TxInfo:     rxPacket.TXInfo,
+						RxInfo:     rxPacket.RXInfoSet,
+					},
+				}); err != nil {
+					log.WithError(err).Error("uplink: call controller HandleRejectedUplinkFrameSet RPC error")
+				}
+			}
 		}
 
-		log.WithFields(log.Fields{
-			"uplink_ids": uplinkIDs,
-			"mtype":      rxPacket.PHYPayload.MHDR.MType,
-			"ctx_id":     ctx.Value(logging.ContextIDKey),
-		}).Info("uplink: frame(s) collected")
-
-		// update the gateway meta-data
-		if err := gateway.UpdateMetaDataInRxInfoSet(ctx, storage.DB(), storage.RedisPool(), rxPacket.RXInfoSet); err != nil {
-			log.WithError(err).Error("uplink: update gateway meta-data in rx-info set error")
-		}
-
-		// log the frame for each receiving gatewa
-		if err := framelog.LogUplinkFrameForGateways(ctx, storage.RedisPool(), gw.UplinkFrameSet{
-			PhyPayload: uplinkFrame.PhyPayload,
-			TxInfo:     rxPacket.TXInfo,
-			RxInfo:     rxPacket.RXInfoSet,
-		}); err != nil {
-			log.WithFields(log.Fields{
-				"ctx_id": ctx.Value(logging.ContextIDKey),
-			}).WithError(err).Error("uplink: log uplink frames for gateways error")
-		}
-
-		// handle the frame based on message-type
-		switch rxPacket.PHYPayload.MHDR.MType {
-		case lorawan.JoinRequest:
-			return join.Handle(ctx, rxPacket)
-		case lorawan.RejoinRequest:
-			return rejoin.Handle(ctx, rxPacket)
-		case lorawan.UnconfirmedDataUp, lorawan.ConfirmedDataUp:
-			return data.Handle(ctx, rxPacket)
-		case lorawan.Proprietary:
-			return proprietary.Handle(ctx, rxPacket)
-		default:
-			return nil
-		}
+		return err
 	})
+}
+
+func handleCollectedUplink(ctx context.Context, uplinkFrame gw.UplinkFrame, rxPacket models.RXPacket) error {
+	var uplinkIDs []uuid.UUID
+	for _, p := range rxPacket.RXInfoSet {
+		uplinkIDs = append(uplinkIDs, helpers.GetUplinkID(p))
+	}
+
+	log.WithFields(log.Fields{
+		"uplink_ids": uplinkIDs,
+		"mtype":      rxPacket.PHYPayload.MHDR.MType,
+		"ctx_id":     ctx.Value(logging.ContextIDKey),
+	}).Info("uplink: frame(s) collected")
+
+	// update the gateway meta-data
+	if err := gateway.UpdateMetaDataInRxInfoSet(ctx, storage.DB(), rxPacket.RXInfoSet); err != nil {
+		log.WithError(err).Error("uplink: update gateway meta-data in rx-info set error")
+	}
+
+	// log the frame for each receiving gateway.
+	if err := framelog.LogUplinkFrameForGateways(ctx, gw.UplinkFrameSet{
+		PhyPayload: uplinkFrame.PhyPayload,
+		TxInfo:     rxPacket.TXInfo,
+		RxInfo:     rxPacket.RXInfoSet,
+	}); err != nil {
+		log.WithFields(log.Fields{
+			"ctx_id": ctx.Value(logging.ContextIDKey),
+		}).WithError(err).Error("uplink: log uplink frames for gateways error")
+	}
+
+	// handle the frame based on message-type
+	switch rxPacket.PHYPayload.MHDR.MType {
+	case lorawan.JoinRequest:
+		return join.Handle(ctx, rxPacket)
+	case lorawan.RejoinRequest:
+		return rejoin.Handle(ctx, rxPacket)
+	case lorawan.UnconfirmedDataUp, lorawan.ConfirmedDataUp:
+		return data.Handle(ctx, rxPacket)
+	case lorawan.Proprietary:
+		return proprietary.Handle(ctx, rxPacket)
+	default:
+		return nil
+	}
 }

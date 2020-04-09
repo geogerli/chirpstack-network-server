@@ -2,7 +2,7 @@ syntax  = "proto3";
 
 package storage;
 
-import "api/gw/gw.proto";
+import "gw/gw.proto";
 
 
 message DownlinkFrames {
@@ -17,4 +17,16 @@ message DownlinkFrames {
 
     // Downlink frames.
     repeated gw.DownlinkFrame downlink_frames = 4;
+
+    // Routing Profile ID.
+    bytes routing_profile_id = 5;
+
+    // Downlink frame-counter (full).
+    uint32 f_cnt = 6;
+
+    // Encrypted FOpts (LoRaWAN 1.1).
+    bool encrypted_fopts = 7;
+
+    // Network session encryption key (for FOpts).
+    bytes nwk_s_enc_key = 8;
 }

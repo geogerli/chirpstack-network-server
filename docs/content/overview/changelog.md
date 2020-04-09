@@ -5,9 +5,182 @@ menu:
         parent: overview
         weight: 3
 toc: false
-description: Lists the changes per LoRa Server release, including steps how to upgrade.
+description: Lists the changes per ChirpStack Network Server release, including steps how to upgrade.
 ---
 # Changelog
+
+## v3.9.0
+
+### Features
+
+#### Redis Cluster and Sentinel
+
+This release introduces the support for [Redis Cluster](https://redis.io/topics/cluster-tutorial)
+and [Redis Sentinel](https://redis.io/topics/sentinel). 
+
+#### Rejected uplink callback to Network Controller
+
+A new API method has been added to the (optional) Network Controller called
+`HandleRejectedUplinkFrameSet`. When ChirpStack Network Server rejects an
+uplink (e.g. when the device is not known to the network, or the activation
+is missing), it will call this method (when the Network Controller is
+configured).
+
+### Improvements
+
+* Change ISM band names to their common name. ([#477](https://github.com/brocaar/chirpstack-network-server/pull/477))
+
+## v3.8.1
+
+### Bugfixes
+
+* Fix AMQP re-connect issue.
+
+## v3.8.0
+
+### Features
+
+#### Downlink gateway randomization
+
+When sending a downlink response, ChirpStack Network Server will select from
+the list of gateways with a given (configurable) margin, a random gateway
+for the downlink. This should result in a better downlink distribution across
+gateways. In case non of the gateways are within the configured margin, the
+best gateway is selected (old behavior).
+
+#### Monitoring
+
+The monitoring configuration has been updated so that it is possible to
+configure both a [Prometheus](https://prometheus.io/) endpoint at `/metrics`
+and healthcheck endpoint at `/health`. This change is backwards compatible,
+but to use the `/health` endpoint you must update your configuration.
+
+#### Forward gateway metadata to AS
+
+By forwarding gateway metadata to the (ChirpStack) Application Server,
+information like serial number, temperature, ... could be stored by the
+Application Server for various use-cases. The configuration of metadata
+is covered by the [ChirpStack Gateway Bridge](https://www.chirpstack.io/gateway-bridge/).
+
+### Improvements
+
+#### Downlink LoRaWAN frame logging
+
+Previously the first downlink scheduling attempt was logged (visible in the
+ChirpStack Application Server under the Gateway / Device LoRaWAN frames). This
+has been changed so that the scheduling attempt acknowledged by the gateway
+is logged. E.g. when RX1 fails, but RX2 succeeds this will log the RX2 attempt.
+
+### Bugfixes
+
+* Update gRPC dependency to fix 'DNS name does not exist' error. ([#426](https://github.com/brocaar/chirpstack-application-server/issues/426))
+
+## v3.7.0
+
+### Features
+
+#### Improve frame-counter validation
+
+The refactored frame-counter validation makes it possible to report different
+types of errors to the Application Server which will make it easier to debug
+frame-counter related issues.
+
+#### OTAA error event
+
+OTAA related errors will now be pushed to the Application Server to make it
+easier to debug OTAA related issues.
+
+#### Downlink tx acknowledgements
+
+Downlink TX acknowledgements (by the gateway) are now forwarded to the
+Application Server. Please note that this is the TX acknowledgement by the
+gateway, indicating that it was enqueued for transmission.
+
+#### Syslog output
+
+When `log_to_syslog` is enabled in the configuration file, the log output will
+be written to syslog.
+
+### Improvements
+
+* Implement setting max reconnect interval for MQTT gateway backend.
+* Implement getting the device queue size only (instead of fetching the complete queue).
+* Implement DNS round-robin load-balancing for gRPC.
+* Cleanup old `api` package (the API definitions have been moved to [chirpstack-api](https://github.com/brocaar/chirpstack-api)).
+* Add uplink IDs to geolocation events for correlation.
+* Remove legacy (and broken) device-session migration code.
+* Cleanup (unused) gateway statistics code.
+* Include 500KHz channels in US915 config examples. ([#462](https://github.com/brocaar/chirpstack-network-server/pull/462))
+
+## v3.6.0
+
+### Features
+
+#### RabbitMQ / AMQP backend
+
+This backend uses [RabbitMQ](https://www.rabbitmq.com/) for gateway communication.
+See the [AMQP / RabbitMQ gateway backend](https://www.chirpstack.io/network-server/backends/amqp/)
+documentation for more information. Please note that this backend does not
+replace the default MQTT backend.
+
+## v3.5.0
+
+### Features
+
+#### RX1 / RX2 selection logic
+
+New configuration options have been added for RX1 / RX2 selection for downlink. ([#429](https://github.com/brocaar/chirpstack-network-server/issues/429))
+
+* Using `rx2_prefer_on_rx1_dr_lt` it is possible to prefer RX2 for downlink, when
+  the RX1 data-rate is less than the configured value.
+* Using `rx2_prefer_on_link_budget` it is possible to prefer RX2 for downlink when
+  RX2 provides a better link budget than RX1.
+
+#### Mac-command error handling
+
+A new configuration option has been added to limit the number of mac-command
+errors (per device). This resolves the issue where the Network Server keeps
+trying to send a downlink mac-command to a malfunctioning device.
+
+#### RPM packaging
+
+This is the first release providing .rpm packages for CentOS and RedHat. ([#454](https://github.com/brocaar/chirpstack-network-server/pull/454))
+
+### Improvements
+
+#### Update lorawan package
+
+The updated version contains logic for the EU868 band to either use 14 dBm or
+27 dBm based on used frequency.
+
+#### gRPC / Protobuf cleanup
+
+All definitions are now imported from `github.com/brocaar/chirpstack-api/go`.
+When using the gRPC API, you must update your imports.
+
+#### Environment variable configuration
+
+Deprecate use of dots (`.`) in environment variable names, use double underscore (`__`) instead. ([#451](https://github.com/brocaar/chirpstack-network-server/pull/451))
+
+#### Antenna diversity
+
+Update lock key of MQTT gateway backend for handling of antenna diversity.
+
+#### Internal improvements
+
+The (re)usage of Redis connections has been improved.
+
+## v3.4.1
+
+### Bugfixes
+
+* Fixes init stop script which could cause the ChirpStack Network Server to not properly stop or restart. ([#447](https://github.com/brocaar/chirpstack-network-server/issues/447))
+* Fix wrong user / group in init script after ChirpStack rename. ([#445](https://github.com/brocaar/chirpstack-network-server/issues/445))
+
+## v3.4.0
+
+This release renames LoRa Server to ChirpStack Network Server.
+See the [Rename Announcement](https://www.chirpstack.io/r/rename-announcement) for more information.
 
 ## v3.3.0
 
@@ -34,10 +207,11 @@ used for accounting purposes.
 
 ### Improvements
 
-* Add PostgreSQL max open / idle connections settings. ([#437](https://github.com/brocaar/loraserver/pull/437))
+* Add PostgreSQL max open / idle connections settings. ([#437](https://github.com/brocaar/chirpstack-network-server/pull/437))
 
 ### Bugfixes
 
+* Fix send on closed channel. ([#433](https://github.com/brocaar/chirpstack-network-server/issues/433))
 * Recover Azure Service-Bus queue client on Receive error.
 * Fix unreturned errors. ([#428](https://github.com/brocaar/loraserver/pull/428))
 * Fix send on closed channel. ([#434](https://github.com/brocaar/loraserver/issues/433))
@@ -81,7 +255,7 @@ backends.
 ### Bugfixes
 
 * Fix NetID 3 & 4 NwkID prefix according to the [errata](https://lora-alliance.org/resource-hub/nwkid-length-fix-type-3-and-type-4-netids-errata-lorawan-backend-10-specification) published by the LoRa Alliance.
-* Fix RX2 timing when RXDelay is > 0. ([#419](https://github.com/brocaar/loraserver/issues/419))
+* Fix RX2 timing when RXDelay is > 0. ([#419](https://github.com/brocaar/chirpstack-network-server/issues/419))
 
 ## v3.1.0
 
@@ -98,13 +272,13 @@ In future releases, more metrics will be exposed using this endpoint.
 
 Even when no application-payload is sent, this can still provide valuable
 information to the end-application (e.g. data-rate, RX attributes, the fact
-that the device is 'alive'). ([#408](https://github.com/brocaar/loraserver/issues/408))
+that the device is 'alive'). ([#408](https://github.com/brocaar/chirpstack-network-server/issues/408))
 
 ### Bugfixes
 
-* Revert LoRaWAN 1.1 Class-C device always joins as Class-A. ([#395](https://github.com/brocaar/loraserver/issues/395))
-* Fix TXParamSetupReq mac-command not being sent. ([#397](https://github.com/brocaar/loraserver/issues/397))
-* Fix ignoring packets received on multiple frequencies. ([#401](https://github.com/brocaar/loraserver/issues/401))
+* Revert LoRaWAN 1.1 Class-C device always joins as Class-A. ([#395](https://github.com/brocaar/chirpstack-network-server/issues/395))
+* Fix TXParamSetupReq mac-command not being sent. ([#397](https://github.com/brocaar/chirpstack-network-server/issues/397))
+* Fix ignoring packets received on multiple frequencies. ([#401](https://github.com/brocaar/chirpstack-network-server/issues/401))
 
 ## v3.0.2
 
@@ -115,13 +289,13 @@ that the device is 'alive'). ([#408](https://github.com/brocaar/loraserver/issue
 ### Bugfixes
 
 * Fix Azure IoT Hub detached link issue / recover on AMQP error.
-* Fix load device-session twice from database. [#406](https://github.com/brocaar/loraserver/pull/406).
+* Fix load device-session twice from database. [#406](https://github.com/brocaar/chirpstack-network-server/pull/406).
 
 ## v3.0.1
 
 ### Bugfixes
 
-* Fix ADR setup. [#396](https://github.com/brocaar/loraserver/pull/396)
+* Fix ADR setup. [#396](https://github.com/brocaar/chirpstack-network-server/pull/396)
 
 ## v3.0.0
 
@@ -132,7 +306,7 @@ that the device is 'alive'). ([#408](https://github.com/brocaar/loraserver/issue
 #### Legacy code removed
 
 Legacy code related to older gateway structures have been removed. All gateway
-messages are now based on the [Protobuf](https://github.com/brocaar/loraserver/blob/master/api/gw/gw.proto)
+messages are now based on the [Protobuf](https://github.com/brocaar/chirpstack-network-server/blob/master/api/gw/gw.proto)
 messages.
 
 #### MQTT topic refactor
@@ -164,7 +338,7 @@ more information.
 
 ### Bugfixes
 
-* Fix ADR setup. [#396](https://github.com/brocaar/loraserver/pull/396)
+* Fix ADR setup. [#396](https://github.com/brocaar/chirpstack-network-server/pull/396)
 
 ## v2.8.1
 
@@ -233,7 +407,7 @@ Gateway Bridge instances to v3 and then upgrade LoRa Server to v3.
 #### Gateway downlink timing API
 
 In order to implement support for the [Basic Station](https://doc.sm.tc/station/)
-some small additions were made to the [gateway API](https://github.com/brocaar/loraserver/blob/master/api/gw/gw.proto),
+some small additions were made to the [gateway API](https://github.com/brocaar/chirpstack-network-server/blob/master/api/gw/gw.proto),
 the API used in the communication between the [LoRa Gateway Bridge](https://www.loraserver.io/lora-gateway-bridge/)
 and LoRa Server.
 
@@ -250,18 +424,18 @@ be removed once LoRa Server v3 has been released.
 ### Bugfixes
 
 * Fix `CFList` with channel-mask for LoRaWAN 1.0.3 devices.
-* Fix triggering uplink configuration function (fixing de-duplication). [#387](https://github.com/brocaar/loraserver/issues/387)
+* Fix triggering uplink configuration function (fixing de-duplication). [#387](https://github.com/brocaar/chirpstack-network-server/issues/387)
 
 ## v2.6.0
 
 ### Features
 
-* On ADR, decrease device DR when the device is using a higher DR than the maximum DR set in the service-profile. [#375](https://github.com/brocaar/loraserver/issues/375)
+* On ADR, decrease device DR when the device is using a higher DR than the maximum DR set in the service-profile. [#375](https://github.com/brocaar/chirpstack-network-server/issues/375)
 
 ### Bugfixes
 
-* Implement missing `DeviceModeReq` mac-command for LoRaWAN 1.1. [#371](https://github.com/brocaar/loraserver/issues/371)
-* Fix triggering gateway config update. [#373](https://github.com/brocaar/loraserver/issues/373)
+* Implement missing `DeviceModeReq` mac-command for LoRaWAN 1.1. [#371](https://github.com/brocaar/chirpstack-network-server/issues/371)
+* Fix triggering gateway config update. [#373](https://github.com/brocaar/chirpstack-network-server/issues/373)
 
 ### Improvements
 
@@ -272,12 +446,12 @@ be removed once LoRa Server v3 has been released.
 
 ### Features
 
-* On ADR, decrease device DR when the device is using a higher DR than the maximum DR set in the service-profile. [#375](https://github.com/brocaar/loraserver/issues/375)
+* On ADR, decrease device DR when the device is using a higher DR than the maximum DR set in the service-profile. [#375](https://github.com/brocaar/chirpstack-network-server/issues/375)
 
 ### Bugfixes
 
-* Implement missing `DeviceModeReq` mac-command for LoRaWAN 1.1. [#371](https://github.com/brocaar/loraserver/issues/371)
-* Fix triggering gateway config update. [#373](https://github.com/brocaar/loraserver/issues/373)
+* Implement missing `DeviceModeReq` mac-command for LoRaWAN 1.1. [#371](https://github.com/brocaar/chirpstack-network-server/issues/371)
+* Fix triggering gateway config update. [#373](https://github.com/brocaar/chirpstack-network-server/issues/373)
 
 ### Improvements
 
@@ -297,8 +471,8 @@ be removed once LoRa Server v3 has been released.
 
 ### Bugfixes
 
-* Fix potential deadlock on MQTT re-connect ([#103](https://github.com/brocaar/lora-gateway-bridge/issues/103))
-* Fix crash on (not yet) support rejoin-request type 1 ([#367](https://github.com/brocaar/loraserver/issues/367))
+* Fix potential deadlock on MQTT re-connect ([#103](https://github.com/brocaar/chirpstack-gateway-bridge/issues/103))
+* Fix crash on (not yet) support rejoin-request type 1 ([#367](https://github.com/brocaar/chirpstack-network-server/issues/367))
 
 ## v2.4.1
 
@@ -335,7 +509,7 @@ LoRa Server no longer returns an error when a `fPort` greater than `224` is used
 
 ### Bugfixes
 
-* Fix init.d logrotate processing. ([#364](https://github.com/brocaar/loraserver/pull/364))
+* Fix init.d logrotate processing. ([#364](https://github.com/brocaar/chirpstack-network-server/pull/364))
 
 ## v2.3.1
 
@@ -374,7 +548,7 @@ The `battery` field (`0...255`) will be removed in the next major release.
 
 The downlink scheduler parameters are now configurable. Refer to
 [Configuration](https://www.loraserver.io/loraserver/install/config/)
-documentation for more information. [#355](https://github.com/brocaar/loraserver/pull/355).
+documentation for more information. [#355](https://github.com/brocaar/chirpstack-network-server/pull/355).
 
 ## v2.2.0
 
@@ -395,7 +569,7 @@ gateway (board).
 ### Bugfixes
 
 * Ignore unknown JSON fields when using the `json` marshaler.
-* Fix TX-power override for Class-B and Class-C. ([#352](https://github.com/brocaar/loraserver/issues/352))
+* Fix TX-power override for Class-B and Class-C. ([#352](https://github.com/brocaar/chirpstack-network-server/issues/352))
 
 ## v2.1.0
 
@@ -430,21 +604,21 @@ based serialization.
 
 ### Bugfixes
 
-* Fix panic on empty routing-profile CA cert ([#349](https://github.com/brocaar/loraserver/issues/349))
+* Fix panic on empty routing-profile CA cert ([#349](https://github.com/brocaar/chirpstack-network-server/issues/349))
 
 ## v2.0.2
 
 ### Bugfixes
 
-* Fix flush device- and service-profile cache on clean database. ([#345](https://github.com/brocaar/loraserver/issues/345))
+* Fix flush device- and service-profile cache on clean database. ([#345](https://github.com/brocaar/chirpstack-network-server/issues/345))
 
 ## v2.0.1
 
 ### Bugfixes
 
-* Use `gofrs/uuid` UUID library as `satori/go.uuid` is not truly random. ([#342](https://github.com/brocaar/loraserver/pull/342))
-* Flush device- and service-profile cache when migrating from v1 to v2. ([lora-app-server#254](https://github.com/brocaar/lora-app-server/issues/254))
-* Set `board` and `antenna` on downlink. ([#341](https://github.com/brocaar/loraserver/pull/341))
+* Use `gofrs/uuid` UUID library as `satori/go.uuid` is not truly random. ([#342](https://github.com/brocaar/chirpstack-network-server/pull/342))
+* Flush device- and service-profile cache when migrating from v1 to v2. ([lora-app-server#254](https://github.com/brocaar/chirpstack-application-server/issues/254))
+* Set `board` and `antenna` on downlink. ([#341](https://github.com/brocaar/chirpstack-network-server/pull/341))
 
 ## v2.0.0
 
@@ -506,7 +680,7 @@ repository for v1.x.
 
 **Bugfixes:**
 
-* Fixes an "index out of range" issue when removing conflicting mac-commands. ([#323](https://github.com/brocaar/loraserver/issues/323))
+* Fixes an "index out of range" issue when removing conflicting mac-commands. ([#323](https://github.com/brocaar/chirpstack-network-server/issues/323))
 
 ## 0.26.2
 
@@ -550,7 +724,7 @@ repository for v1.x.
 
 **Bugfixes:**
 
-* Fix leaking Redis connections on pubsub subscriber ([#313](https://github.com/brocaar/loraserver/issues/313).
+* Fix leaking Redis connections on pubsub subscriber ([#313](https://github.com/brocaar/chirpstack-network-server/issues/313).
 
 **Upgrade notes:**
 
@@ -582,18 +756,18 @@ of your (PostgreSQL) database.
 **Bugfixes:**
 
 * MQTT topics were hardcoded in configuration file template, this has been fixed.
-* Fix `network_contoller` -> `network_controller` typo ([#302](https://github.com/brocaar/loraserver/issues/302))
-* Fix typo in pubsub key (resulting in ugly Redis keys) ([#296](https://github.com/brocaar/loraserver/pull/296))
+* Fix `network_contoller` -> `network_controller` typo ([#302](https://github.com/brocaar/chirpstack-network-server/issues/302))
+* Fix typo in pubsub key (resulting in ugly Redis keys) ([#296](https://github.com/brocaar/chirpstack-network-server/pull/296))
 
 ## 0.25.0
 
 **Features:**
 
-* Class-B support! See [Device classes](https://docs.loraserver.io/loraserver/features/device-classes/)
+* Class-B support! See [Device classes](https://www.chirpstack.io/network-server/features/device-classes/)
   for more information on Class-B.
   * Class-B configuration can be found under the `network_server.network_settings.class_b`
-   [configuration](https://docs.loraserver.io/loraserver/install/config/) section.
-  * **Note:** This requires [LoRa Gateway Bridge](https://docs.loraserver.io/lora-gateway-bridge/overview/)
+   [configuration](https://www.chirpstack.io/network-server/install/config/) section.
+  * **Note:** This requires [LoRa Gateway Bridge](https://www.chirpstack.io/gateway-bridge/overview/)
     2.2.0 or up.
 
 * Extended support for extra channel configuration using the NewChannelReq mac-command.
@@ -619,7 +793,7 @@ of your (PostgreSQL) database.
 **Improvements:**
 
 * MQTT topics are now configurable through the configuration file.
-  See [Configuration](https://docs.loraserver.io/loraserver/install/config/).
+  See [Configuration](https://www.chirpstack.io/network-server/install/config/).
 
 * Internal cleanup of mac-command handling.
   * When issuing mac-commands, they are directly added to the downlink
@@ -629,23 +803,23 @@ of your (PostgreSQL) database.
 
 **Bugfixes:**
 
-* Fix typo in `create_gateway_on_stats` config mapping. (thanks [@mkiiskila](https://github.com/mkiiskila), [#295](https://github.com/brocaar/loraserver/pull/295))
+* Fix typo in `create_gateway_on_stats` config mapping. (thanks [@mkiiskila](https://github.com/mkiiskila), [#295](https://github.com/brocaar/chirpstack-network-server/pull/295))
 
 ## 0.24.1
 
 **Bugfixes:**
 
-* Fix basing tx-power value on wrong SNR value (thanks [@x0y1z2](https://github.com/x0y1z2), [#293](https://github.com/brocaar/loraserver/issues/293))
+* Fix basing tx-power value on wrong SNR value (thanks [@x0y1z2](https://github.com/x0y1z2), [#293](https://github.com/brocaar/chirpstack-network-server/issues/293))
 
 ## 0.24.0
 
 **Features:**
 
 * LoRa Server uses a new configuration file format.
-  See [configuration](https://docs.loraserver.io/loraserver/install/config/) for more information.
+  See [configuration](https://www.chirpstack.io/network-server/install/config/) for more information.
 * `StreamFrameLogsForGateway` API method has been added to stream frames for a given gateway MAC.
 * `StreamFrameLogsForDevice` API method has been added to stream frames for a given DevEUI.
-* Support MQTT client certificate authentication ([#284](https://github.com/brocaar/loraserver/pull/284)).
+* Support MQTT client certificate authentication ([#284](https://github.com/brocaar/chirpstack-network-server/pull/284)).
 
 **Changes:**
 
@@ -656,7 +830,7 @@ of your (PostgreSQL) database.
 
 When upgrading using the `.deb` package / using `apt` or `apt-get`, your
 configuration will be automatically migrated for you. In any other case,
-please see [configuration](https://docs.loraserver.io/loraserver/install/config/).
+please see [configuration](https://www.chirpstack.io/network-server/install/config/).
 
 ## 0.23.3
 
@@ -693,10 +867,10 @@ This removes the following CLI options:
 
 See for more information:
 
-* [LoRa Server configuration](https://docs.loraserver.io/loraserver/install/config/)
-* [LoRa App Server configuration](https://docs.loraserver.io/lora-app-server/install/config/)
-* [LoRa App Server network-server management](https://docs.loraserver.io/lora-app-server/use/network-servers/)
-* [https://github.com/brocaar/loraserver-certificates](https://github.com/brocaar/loraserver-certificates)
+* [LoRa Server configuration](https://www.chirpstack.io/network-server/install/config/)
+* [LoRa App Server configuration](https://www.chirpstack.io/application-server/install/config/)
+* [LoRa App Server network-server management](https://www.chirpstack.io/application-server/use/network-servers/)
+* [https://github.com/brocaar/chirpstack-network-server-certificates](https://github.com/brocaar/chirpstack-network-server-certificates)
 
 ## 0.23.1
 
@@ -707,7 +881,7 @@ See for more information:
 **Bugfixes:**
 
 * Add missing `nil` pointer check for `Time`
-  ([#280](https://github.com/brocaar/loraserver/issues/280))
+  ([#280](https://github.com/brocaar/chirpstack-network-server/issues/280))
 * Fix increase of NbTrans (re-transmissions) in case of early packetloss.
 * Fix decreasing NbTrans (this only happened in case of data-rate or TX
   power change).
@@ -779,11 +953,11 @@ backup of your PostgreSQL and Redis database before upgrading.
   LoRaWAN backend interfaces specification (currently hard-configured endpoint).
 
 * Adaptive data-rate configuration is now globally configured by LoRa Server.
-  See [configuration](https://docs.loraserver.io/loraserver/install/config/).
+  See [configuration](https://www.chirpstack.io/network-server/install/config/).
 
 * OTAA RX configuration (RX1 delay, RX1 data-rate offset and RX2 dat-rate) is
   now globally configured by LoRa Server.
-  See [configuration](https://docs.loraserver.io/loraserver/install/config/).
+  See [configuration](https://www.chirpstack.io/network-server/install/config/).
 
 **API changes:**
 
@@ -806,7 +980,7 @@ make sure to set the `--js-server` / `JS_SERVER` (default `localhost:8003`).
 
 This release depends on the latest LoRa App Server release (0.14). Upgrade
 LoRa Server first, then proceed with upgrading LoRa App Server. See also the
-[LoRa App Server changelog](https://docs.loraserver.io/lora-app-server/overview/changelog/).
+[LoRa App Server changelog](https://www.chirpstack.io/application-server/overview/changelog/).
 
 ## 0.21.0
 
@@ -834,7 +1008,7 @@ LoRa Server first, then proceed with upgrading LoRa App Server. See also the
 
 * Remove gateway location and altitude 'nullable' option in the database.
   This removes some complexity and fixes a nil pointer issue when compiled
-  using Go < 1.8 ([#210](https://github.com/brocaar/loraserver/issues/210)).
+  using Go < 1.8 ([#210](https://github.com/brocaar/chirpstack-network-server/issues/210)).
 
 * Update `AU_915_928` data-rates according to the LoRaWAN Regional Parameters
   1.0.2 specification.
@@ -854,7 +1028,7 @@ LoRa Server first, then proceed with upgrading LoRa App Server. See also the
 * LoRa Server now offers the possiblity to configure channel-plans which can
   be assigned to gateways. It exposes an API (by default on port `8002`) which
   can be used by [LoRa Gateway Config](https://docs.loraserver.io/lora-gateway-config/).
-  An UI for channel-configurations is provided by [LoRa App Server](https://docs.loraserver.io/lora-app-server/)
+  An UI for channel-configurations is provided by [LoRa App Server](https://www.chirpstack.io/application-server/)
   version 0.11.0+.
 
 **Note:** Before upgrading, make sure to configure the `--gw-server-jwt-secret`
@@ -905,7 +1079,7 @@ switch a node to an unsupported TX power index.
 
 **Note:** In case you are using the gRPC API interface of LoRa Server,
 this might be a breaking change because of the above changes to the APi methods.
-For a code-example, please see the [Network-controller](https://docs.loraserver.io/loraserver/integrate/network-controller/)
+For a code-example, please see the [Network-controller](https://www.chirpstack.io/network-server/integrate/network-controller/)
 documentation.
 
 **Bugfixes:**
@@ -934,9 +1108,9 @@ documentation.
 * TTL of node-sessions in Redis is now configurable through
   `--node-session-ttl` / `NODE_SESSION_TTL` config flag.
   This makes it possible to configure the time after which a node-session
-  expires after no activity ([#100](https://github.com/brocaar/loraserver/issues/100)).
+  expires after no activity ([#100](https://github.com/brocaar/chirpstack-network-server/issues/100)).
 * Relax frame-counter mode has been changed to disable frame-counter check mode
-  to deal with different devices ([#133](https://github.com/brocaar/loraserver/issues/133)).
+  to deal with different devices ([#133](https://github.com/brocaar/chirpstack-network-server/issues/133)).
 
 ## 0.17.0
 
@@ -1009,7 +1183,7 @@ upgrading.
 
 **Changes:**
 
-* RU 864 - 869 band configuration has been updated (see [#113](https://github.com/brocaar/loraserver/issues/113))
+* RU 864 - 869 band configuration has been updated (see [#113](https://github.com/brocaar/chirpstack-network-server/issues/113))
 
 ## 0.13.3
 
@@ -1052,7 +1226,7 @@ upgrading.
 * Adaptive data-rate support. See [features](features.md) for information about
   ADR. Note:
   
-    * [LoRa App Server](https://docs.loraserver.io/lora-app-server/) 0.2.0 or
+    * [LoRa App Server](https://www.chirpstack.io/application-server/) 0.2.0 or
       higher is required
     * ADR is currently only implemented for the EU 863-870 ISM band
     * This is an experimental feature
@@ -1108,13 +1282,13 @@ part of LoRa Server, but are only exposed by gRPC.
 
 ### Application-server
 
-An application-server component and [API](https://github.com/brocaar/loraserver/blob/master/api/as/as.proto)
+An application-server component and [API](https://github.com/brocaar/chirpstack-network-server/blob/master/api/as/as.proto)
 was introduced to be responsible for the "inventory" part. This component is
 called by LoRa Server when a node tries to join the network, when data is
 received and to retrieve data for downlink transmissions.
 
 The inventory part has been migrated to a new project called
-[LoRa App Server](http://docs.loraserver.io/lora-app-server/). See it's
+[LoRa App Server](http://www.chirpstack.io/application-server/). See it's
 changelog for instructions how to migrate.
 
 ### Configuration
@@ -1140,7 +1314,7 @@ and Redis database!
 ## 0.10.0
 
 * Implement (optional) JWT token authentication and authorization for the gRPC
-  and RESTful JSON API. See [api documentation](https://docs.loraserver.io/loraserver/api/).
+  and RESTful JSON API. See [api documentation](https://www.chirpstack.io/network-server/api/).
 * Implement support for TLS
 * Serve the web-interface, RESTful interface and gRPC interface on the same port
   (defined by `--http-bind`). When TLS is disabled, the gRPC interface is
@@ -1165,7 +1339,7 @@ In order to keep the possiblity to access the API from web-based applications
 of the gRPC API (using [grpc-gateway](https://github.com/grpc-ecosystem/grpc-gateway)).
 
 Please refer to the LoRa Server documentation for more information:
-[https://docs.loraserver.io/loraserver/api/](https://docs.loraserver.io/loraserver/api/).
+[https://www.chirpstack.io/network-server/api/](https://www.chirpstack.io/network-server/api/).
 
 ## 0.8.2
 

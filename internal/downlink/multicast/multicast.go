@@ -12,14 +12,14 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/brocaar/loraserver/api/gw"
-	"github.com/brocaar/loraserver/internal/backend/gateway"
-	"github.com/brocaar/loraserver/internal/band"
-	"github.com/brocaar/loraserver/internal/config"
-	"github.com/brocaar/loraserver/internal/framelog"
-	"github.com/brocaar/loraserver/internal/helpers"
-	"github.com/brocaar/loraserver/internal/logging"
-	"github.com/brocaar/loraserver/internal/storage"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-network-server/internal/backend/gateway"
+	"github.com/brocaar/chirpstack-network-server/internal/band"
+	"github.com/brocaar/chirpstack-network-server/internal/config"
+	"github.com/brocaar/chirpstack-network-server/internal/framelog"
+	"github.com/brocaar/chirpstack-network-server/internal/helpers"
+	"github.com/brocaar/chirpstack-network-server/internal/logging"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
 	"github.com/brocaar/lorawan"
 )
 
@@ -49,10 +49,10 @@ var multicastTasks = []func(*multicastContext) error{
 }
 
 var (
-	downlinkLockDuration time.Duration
-	schedulerInterval    time.Duration
-	installationMargin   float64
-	downlinkTXPower      int
+	multicastGatewayDelay time.Duration
+	schedulerInterval     time.Duration
+	installationMargin    float64
+	downlinkTXPower       int
 
 	// TODO: make configurable
 	classBEnqueueMargin = time.Second * 5
@@ -60,7 +60,7 @@ var (
 
 // Setup sets up the multicast package.
 func Setup(conf config.Config) error {
-	downlinkLockDuration = conf.NetworkServer.Scheduler.ClassC.DownlinkLockDuration
+	multicastGatewayDelay = conf.NetworkServer.Scheduler.ClassC.MulticastGatewayDelay
 	schedulerInterval = conf.NetworkServer.Scheduler.SchedulerInterval
 	installationMargin = conf.NetworkServer.NetworkSettings.InstallationMargin
 	downlinkTXPower = conf.NetworkServer.NetworkSettings.DownlinkTXPower
@@ -242,7 +242,7 @@ func sendDownlinkData(ctx *multicastContext) error {
 		return errors.Wrap(err, "send downlink frame to gateway error")
 	}
 
-	if err := framelog.LogDownlinkFrameForGateway(ctx.ctx, storage.RedisPool(), ctx.DownlinkFrame); err != nil {
+	if err := framelog.LogDownlinkFrameForGateway(ctx.ctx, ctx.DownlinkFrame); err != nil {
 		log.WithError(err).Error("log downlink frame for gateway error")
 	}
 
@@ -256,7 +256,7 @@ func saveDownlinkFrame(ctx *multicastContext) error {
 		DownlinkFrames:   []*gw.DownlinkFrame{&ctx.DownlinkFrame},
 	}
 
-	if err := storage.SaveDownlinkFrames(ctx.ctx, storage.RedisPool(), df); err != nil {
+	if err := storage.SaveDownlinkFrames(ctx.ctx, df); err != nil {
 		return errors.Wrap(err, "save downlink-frames error")
 	}
 

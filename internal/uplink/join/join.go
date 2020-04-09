@@ -11,16 +11,18 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/brocaar/loraserver/api/nc"
-	"github.com/brocaar/loraserver/internal/backend/controller"
-	"github.com/brocaar/loraserver/internal/backend/joinserver"
-	"github.com/brocaar/loraserver/internal/band"
-	"github.com/brocaar/loraserver/internal/config"
-	joindown "github.com/brocaar/loraserver/internal/downlink/join"
-	"github.com/brocaar/loraserver/internal/framelog"
-	"github.com/brocaar/loraserver/internal/logging"
-	"github.com/brocaar/loraserver/internal/models"
-	"github.com/brocaar/loraserver/internal/storage"
+	"github.com/brocaar/chirpstack-api/go/v3/as"
+	"github.com/brocaar/chirpstack-api/go/v3/nc"
+	"github.com/brocaar/chirpstack-network-server/internal/backend/controller"
+	"github.com/brocaar/chirpstack-network-server/internal/backend/joinserver"
+	"github.com/brocaar/chirpstack-network-server/internal/band"
+	"github.com/brocaar/chirpstack-network-server/internal/config"
+	joindown "github.com/brocaar/chirpstack-network-server/internal/downlink/join"
+	"github.com/brocaar/chirpstack-network-server/internal/framelog"
+	"github.com/brocaar/chirpstack-network-server/internal/helpers"
+	"github.com/brocaar/chirpstack-network-server/internal/logging"
+	"github.com/brocaar/chirpstack-network-server/internal/models"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
 	"github.com/brocaar/lorawan"
 	"github.com/brocaar/lorawan/backend"
 	loraband "github.com/brocaar/lorawan/band"
@@ -116,7 +118,7 @@ func logJoinRequestFramesCollected(ctx *joinContext) error {
 		return errors.Wrap(err, "create uplink frame-set error")
 	}
 
-	if err := framelog.LogUplinkFrameForDevEUI(ctx.ctx, storage.RedisPool(), ctx.JoinRequestPayload.DevEUI, uplinkFrameSet); err != nil {
+	if err := framelog.LogUplinkFrameForDevEUI(ctx.ctx, ctx.JoinRequestPayload.DevEUI, uplinkFrameSet); err != nil {
 		log.WithFields(log.Fields{
 			"ctx_id": ctx.ctx.Value("join_ctx"),
 		}).WithError(err).Error("log uplink frame for device error")
@@ -161,7 +163,28 @@ func validateNonce(ctx *joinContext) error {
 		lorawan.JoinRequestType,
 	)
 	if err != nil {
-		return errors.Wrap(err, "validate dev-nonce error")
+		returnErr := errors.Wrap(err, "validate dev-nonce error")
+		asClient, err := helpers.GetASClientForRoutingProfileID(ctx.ctx, ctx.Device.RoutingProfileID)
+		if err != nil {
+			log.WithError(err).WithFields(log.Fields{
+				"ctx_id":  ctx.ctx.Value(logging.ContextIDKey),
+				"dev_eui": ctx.Device.DevEUI,
+			}).Error("uplink/join: get as client for routing-profile id error")
+		} else {
+			_, err := asClient.HandleError(ctx.ctx, &as.HandleErrorRequest{
+				DevEui: ctx.Device.DevEUI[:],
+				Type:   as.ErrorType_OTAA,
+				Error:  "validate dev-nonce error",
+			})
+			if err != nil {
+				log.WithError(err).WithFields(log.Fields{
+					"ctx_id":  ctx.ctx.Value(logging.ContextIDKey),
+					"dev_eui": ctx.Device.DevEUI,
+				}).Error("uplink/join: as.HandleError error")
+			}
+		}
+
+		return returnErr
 	}
 
 	return nil
@@ -232,7 +255,31 @@ func getJoinAcceptFromAS(ctx *joinContext) error {
 
 	ctx.JoinAnsPayload, err = jsClient.JoinReq(ctx.ctx, joinReqPL)
 	if err != nil {
-		return errors.Wrap(err, "join-request to join-server error")
+		returnErr := errors.Wrap(err, "join-request to join-server error")
+		req := as.HandleErrorRequest{
+			DevEui: ctx.Device.DevEUI[:],
+			Type:   as.ErrorType_OTAA,
+			Error:  "join-server returned error: " + err.Error(),
+		}
+
+		asClient, err := helpers.GetASClientForRoutingProfileID(ctx.ctx, ctx.Device.RoutingProfileID)
+		if err != nil {
+
+			log.WithError(err).WithFields(log.Fields{
+				"ctx_id":  ctx.ctx.Value(logging.ContextIDKey),
+				"dev_eui": ctx.Device.DevEUI,
+			}).Error("uplink/join: get as client for routing-profile id error")
+		} else {
+			_, err := asClient.HandleError(ctx.ctx, &req)
+			if err != nil {
+				log.WithError(err).WithFields(log.Fields{
+					"ctx_id":  ctx.ctx.Value(logging.ContextIDKey),
+					"dev_eui": ctx.Device.DevEUI,
+				}).Error("uplink/join: as.HandleError error")
+			}
+		}
+
+		return returnErr
 	}
 
 	return nil
@@ -390,11 +437,11 @@ func createDeviceSession(ctx *joinContext) error {
 
 	ctx.DeviceSession = ds
 
-	if err := storage.SaveDeviceSession(ctx.ctx, storage.RedisPool(), ctx.DeviceSession); err != nil {
+	if err := storage.SaveDeviceSession(ctx.ctx, ctx.DeviceSession); err != nil {
 		return errors.Wrap(err, "save node-session error")
 	}
 
-	if err := storage.FlushMACCommandQueue(ctx.ctx, storage.RedisPool(), ctx.DeviceSession.DevEUI); err != nil {
+	if err := storage.FlushMACCommandQueue(ctx.ctx, ctx.DeviceSession.DevEUI); err != nil {
 		return fmt.Errorf("flush mac-command queue error: %s", err)
 	}
 

@@ -10,12 +10,12 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/require"
 
-	"github.com/brocaar/loraserver/api/as"
-	"github.com/brocaar/loraserver/api/geo"
-	"github.com/brocaar/loraserver/api/gw"
-	"github.com/brocaar/loraserver/api/nc"
-	"github.com/brocaar/loraserver/internal/downlink/ack"
-	"github.com/brocaar/loraserver/internal/storage"
+	"github.com/brocaar/chirpstack-api/go/v3/as"
+	"github.com/brocaar/chirpstack-api/go/v3/geo"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-api/go/v3/nc"
+	"github.com/brocaar/chirpstack-network-server/internal/downlink/ack"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
 	"github.com/brocaar/lorawan"
 	"github.com/brocaar/lorawan/backend"
 )
@@ -40,6 +40,13 @@ func AssertNFCntDown(fCnt uint32) Assertion {
 func AssertAFCntDown(fCnt uint32) Assertion {
 	return func(assert *require.Assertions, ts *IntegrationTestSuite) {
 		assert.Equal(fCnt, ts.DeviceSession.AFCntDown)
+	}
+}
+
+// AssertMACCommandErrorCount asserts the mac-command error count.
+func AssertMACCommandErrorCount(cid lorawan.CID, count int) Assertion {
+	return func(assert *require.Assertions, ts *IntegrationTestSuite) {
+		assert.Equal(count, ts.DeviceSession.MACCommandErrorCount[cid])
 	}
 }
 
@@ -83,7 +90,7 @@ func AssertDownlinkFrame(txInfo gw.DownlinkTXInfo, phy lorawan.PHYPayload) Asser
 
 func AssertDownlinkFrameSaved(devEUI lorawan.EUI64, mcGroupID uuid.UUID, txInfo gw.DownlinkTXInfo, phy lorawan.PHYPayload) Assertion {
 	return func(assert *require.Assertions, ts *IntegrationTestSuite) {
-		frames, err := storage.GetDownlinkFrames(context.Background(), storage.RedisPool(), uint16(lastToken))
+		frames, err := storage.GetDownlinkFrames(context.Background(), uint16(lastToken))
 		assert.NoError(err)
 
 		assert.True(len(frames.DownlinkFrames) > 0, "empty downlink-frames")
@@ -126,7 +133,7 @@ func AssertDownlinkFrameSaved(devEUI lorawan.EUI64, mcGroupID uuid.UUID, txInfo 
 
 		// pop the frame that we have been validating, so that we can validate the next one
 		frames.DownlinkFrames = frames.DownlinkFrames[1:]
-		assert.NoError(storage.SaveDownlinkFrames(context.Background(), storage.RedisPool(), frames))
+		assert.NoError(storage.SaveDownlinkFrames(context.Background(), frames))
 	}
 }
 
@@ -136,7 +143,7 @@ func AssertNoDownlinkFrame(assert *require.Assertions, ts *IntegrationTestSuite)
 }
 
 func AssertNoDownlinkFrameSaved(assert *require.Assertions, ts *IntegrationTestSuite) {
-	_, err := storage.GetDownlinkFrames(context.Background(), storage.RedisPool(), uint16(lastToken))
+	_, err := storage.GetDownlinkFrames(context.Background(), uint16(lastToken))
 	assert.Equal(storage.ErrDoesNotExist, err)
 }
 
@@ -204,7 +211,7 @@ func AssertJSRejoinReqPayload(pl backend.RejoinReqPayload) Assertion {
 // AssertDeviceSession asserts the given device-session.
 func AssertDeviceSession(ds storage.DeviceSession) Assertion {
 	return func(assert *require.Assertions, ts *IntegrationTestSuite) {
-		sess, err := storage.GetDeviceSession(context.Background(), storage.RedisPool(), ts.Device.DevEUI)
+		sess, err := storage.GetDeviceSession(context.Background(), ts.Device.DevEUI)
 		assert.NoError(err)
 
 		assert.NotEqual(lorawan.DevAddr{}, sess.DevAddr)
@@ -262,12 +269,46 @@ func AssertASHandleDownlinkACKRequest(req as.HandleDownlinkACKRequest) Assertion
 	}
 }
 
+// AssertASHandleTxAckRequest asserts the given tx ack request.
+func AssertASHandleTxAckRequest(req as.HandleTxAckRequest) Assertion {
+	return func(assert *require.Assertions, ts *IntegrationTestSuite) {
+		r := <-ts.ASClient.HandleTxAckChan
+		if !proto.Equal(&r, &req) {
+			assert.Equal(req, r)
+		}
+	}
+}
+
+// AssertASNoHandleTxAckRequest asserts that there is no tx ack request.
+func AssertASNoHandleTxAckRequest() Assertion {
+	return func(assert *require.Assertions, ts *IntegrationTestSuite) {
+		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-ts.ASClient.HandleTxAckChan:
+			assert.Fail("unexpected tx ack request")
+		default:
+		}
+	}
+}
+
 // AssertASHandleErrorRequest asserts the given error request.
 func AssertASHandleErrorRequest(req as.HandleErrorRequest) Assertion {
 	return func(assert *require.Assertions, ts *IntegrationTestSuite) {
 		r := <-ts.ASClient.HandleErrorChan
 		if !proto.Equal(&r, &req) {
 			assert.Equal(req, r)
+		}
+	}
+}
+
+// AssertASNoHandleErrorRequest asserts that there is no error request.
+func AssertASNoHandleErrorRequest() Assertion {
+	return func(assert *require.Assertions, ts *IntegrationTestSuite) {
+		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-ts.ASClient.HandleErrorChan:
+			assert.Fail("unexpected error request")
+		default:
 		}
 	}
 }
@@ -337,6 +378,12 @@ func AssertASSetDeviceStatusRequest(req as.SetDeviceStatusRequest) Assertion {
 func AssertASSetDeviceLocationRequest(req as.SetDeviceLocationRequest) Assertion {
 	return func(assert *require.Assertions, ts *IntegrationTestSuite) {
 		r := <-ts.ASClient.SetDeviceLocationChan
+
+		// we assume that we can sort on the first byte of each uplink_id
+		sort.Slice(r.UplinkIds, func(i, j int) bool {
+			return r.UplinkIds[i][0] < r.UplinkIds[j][0]
+		})
+
 		if !proto.Equal(&r, &req) {
 			assert.Equal(req, r)
 		}

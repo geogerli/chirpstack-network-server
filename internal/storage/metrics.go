@@ -6,10 +6,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/brocaar/loraserver/internal/logging"
-	"github.com/gomodule/redigo/redis"
+	"github.com/go-redis/redis/v7"
 	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
 )
 
 // AggregationInterval defines the aggregation type.
@@ -24,17 +22,14 @@ const (
 )
 
 const (
-	metricsKeyTempl = "lora:ns:metrics:%s:%s:%d" // metrics key (identifier | aggregation | timestamp)
-
+	// Metrics key (identifier | aggregation | timestamp).
+	// The identifier is used as hash tag to make sure that all keys for the
+	// same identifier are on the same shard when using Redis Cluster.
+	metricsKeyTempl = "lora:ns:metrics:{%s}:%s:%d"
 )
 
 var (
-	timeLocation         = time.Local
-	aggregationIntervals []AggregationInterval
-	metricsMinuteTTL     time.Duration
-	metricsHourTTL       time.Duration
-	metricsDayTTL        time.Duration
-	metricsMonthTTL      time.Duration
+	timeLocation = time.Local
 )
 
 // MetricsRecord holds a single metrics record.
@@ -53,96 +48,8 @@ func SetTimeLocation(name string) error {
 	return nil
 }
 
-// SetAggregationIntervals sets the metrics aggregation to the given intervals.
-func SetAggregationIntervals(intervals []AggregationInterval) error {
-	aggregationIntervals = intervals
-	return nil
-}
-
-// SetMetricsTTL sets the storage TTL.
-func SetMetricsTTL(minute, hour, day, month time.Duration) {
-	metricsMinuteTTL = minute
-	metricsHourTTL = hour
-	metricsDayTTL = day
-	metricsMonthTTL = month
-}
-
-// SaveMetrics stores the given metrics into Redis.
-func SaveMetrics(ctx context.Context, p *redis.Pool, name string, metrics MetricsRecord) error {
-	for _, agg := range aggregationIntervals {
-		if err := SaveMetricsForInterval(ctx, p, agg, name, metrics); err != nil {
-			return errors.Wrap(err, "save metrics for interval error")
-		}
-	}
-
-	log.WithFields(log.Fields{
-		"name":        name,
-		"aggregation": aggregationIntervals,
-		"ctx_id":      ctx.Value(logging.ContextIDKey),
-	}).Info("metrics saved")
-
-	return nil
-}
-
-// SaveMetricsForInterval aggregates and stores the given metrics.
-func SaveMetricsForInterval(ctx context.Context, p *redis.Pool, agg AggregationInterval, name string, metrics MetricsRecord) error {
-	if len(metrics.Metrics) == 0 {
-		return nil
-	}
-
-	c := p.Get()
-	defer c.Close()
-	var exp int64
-
-	// handle aggregation
-	ts := metrics.Time.In(timeLocation)
-	switch agg {
-	case AggregationMinute:
-		// truncate timestamp to minute precision
-		ts = time.Date(ts.Year(), ts.Month(), ts.Day(), ts.Hour(), ts.Minute(), 0, 0, timeLocation)
-		exp = int64(metricsMinuteTTL) / int64(time.Millisecond)
-	case AggregationHour:
-		// truncate timestamp to hour precision
-		ts = time.Date(ts.Year(), ts.Month(), ts.Day(), ts.Hour(), 0, 0, 0, timeLocation)
-		exp = int64(metricsHourTTL) / int64(time.Millisecond)
-	case AggregationDay:
-		// truncate timestamp to day precision
-		ts = time.Date(ts.Year(), ts.Month(), ts.Day(), 0, 0, 0, 0, timeLocation)
-		exp = int64(metricsDayTTL) / int64(time.Millisecond)
-	case AggregationMonth:
-		// truncate timestamp to month precision
-		ts = time.Date(ts.Year(), ts.Month(), 1, 0, 0, 0, 0, timeLocation)
-		exp = int64(metricsMonthTTL) / int64(time.Millisecond)
-	default:
-		return fmt.Errorf("unexepcted aggregation interval: %s", agg)
-	}
-
-	key := fmt.Sprintf(metricsKeyTempl, name, agg, ts.Unix())
-
-	c.Send("MULTI")
-	for k, v := range metrics.Metrics {
-		c.Send("HINCRBYFLOAT", key, k, v)
-	}
-	c.Send("PEXPIRE", key, exp)
-
-	if _, err := c.Do("EXEC"); err != nil {
-		return errors.Wrap(err, "exec error")
-	}
-
-	log.WithFields(log.Fields{
-		"name":        name,
-		"aggregation": agg,
-		"ctx_id":      ctx.Value(logging.ContextIDKey),
-	}).Debug("metrics saved")
-
-	return nil
-}
-
 // GetMetrics returns the metrics for the requested aggregation interval.
-func GetMetrics(ctx context.Context, p *redis.Pool, agg AggregationInterval, name string, start, end time.Time) ([]MetricsRecord, error) {
-	c := p.Get()
-	defer c.Close()
-
+func GetMetrics(ctx context.Context, agg AggregationInterval, name string, start, end time.Time) ([]MetricsRecord, error) {
 	var keys []string
 	var timestamps []time.Time
 
@@ -199,25 +106,26 @@ func GetMetrics(ctx context.Context, p *redis.Pool, agg AggregationInterval, nam
 		return nil, nil
 	}
 
+	pipe := RedisClient().Pipeline()
+	var vals []*redis.StringStringMapCmd
 	for _, k := range keys {
-		c.Send("HGETALL", k)
+		vals = append(vals, pipe.HGetAll(k))
 	}
-	c.Flush()
+
+	if _, err := pipe.Exec(); err != nil {
+		return nil, errors.Wrap(err, "hget error")
+	}
 
 	var out []MetricsRecord
 
-	for _, ts := range timestamps {
+	for i, ts := range timestamps {
 		metrics := MetricsRecord{
 			Time:    ts,
 			Metrics: make(map[string]float64),
 		}
 
-		vals, err := redis.StringMap(c.Receive())
-		if err != nil {
-			return nil, errors.Wrap(err, "receive stringmap error")
-		}
-
-		for k, v := range vals {
+		val := vals[i].Val()
+		for k, v := range val {
 			f, err := strconv.ParseFloat(v, 64)
 			if err != nil {
 				return nil, errors.Wrap(err, "parse float error")

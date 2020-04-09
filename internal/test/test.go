@@ -7,20 +7,19 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/golang/protobuf/ptypes/empty"
-	"github.com/gomodule/redigo/redis"
 	migrate "github.com/rubenv/sql-migrate"
 	log "github.com/sirupsen/logrus"
 	context "golang.org/x/net/context"
 	"google.golang.org/grpc"
 
-	"github.com/brocaar/loraserver/api/as"
-	"github.com/brocaar/loraserver/api/geo"
-	"github.com/brocaar/loraserver/api/gw"
-	"github.com/brocaar/loraserver/api/nc"
-	"github.com/brocaar/loraserver/internal/api/client/asclient"
-	"github.com/brocaar/loraserver/internal/band"
-	"github.com/brocaar/loraserver/internal/config"
-	"github.com/brocaar/loraserver/internal/migrations"
+	"github.com/brocaar/chirpstack-api/go/v3/as"
+	"github.com/brocaar/chirpstack-api/go/v3/geo"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-api/go/v3/nc"
+	"github.com/brocaar/chirpstack-network-server/internal/api/client/asclient"
+	"github.com/brocaar/chirpstack-network-server/internal/band"
+	"github.com/brocaar/chirpstack-network-server/internal/config"
+	"github.com/brocaar/chirpstack-network-server/internal/migrations"
 	"github.com/brocaar/lorawan"
 	loraband "github.com/brocaar/lorawan/band"
 )
@@ -30,28 +29,19 @@ func init() {
 
 }
 
-// Config contains the test configuration.
-type Config struct {
-	RedisURL     string
-	PostgresDSN  string
-	MQTTServer   string
-	MQTTUsername string
-	MQTTPassword string
-}
-
 // GetConfig returns the test configuration.
 func GetConfig() config.Config {
 	log.SetLevel(log.FatalLevel)
 
 	var c config.Config
-	c.NetworkServer.Band.Name = loraband.EU_863_870
+	c.NetworkServer.Band.Name = loraband.EU868
 
 	if err := band.Setup(c); err != nil {
 		panic(err)
 	}
 
 	c.Redis.URL = "redis://localhost:6379/1"
-	c.PostgreSQL.DSN = "postgres://localhost/loraserver_ns_test?sslmode=disable"
+	c.PostgreSQL.DSN = "postgres://localhost/chirpstack_ns_test?sslmode=disable"
 
 	c.NetworkServer.NetID = lorawan.NetID{3, 2, 1}
 	c.NetworkServer.DeviceSessionTTL = time.Hour
@@ -62,6 +52,7 @@ func GetConfig() config.Config {
 	c.NetworkServer.NetworkSettings.RX2DR = band.Band().GetDefaults().RX2DataRate
 	c.NetworkServer.NetworkSettings.RX1Delay = 0
 	c.NetworkServer.NetworkSettings.DownlinkTXPower = -1
+	c.NetworkServer.NetworkSettings.MaxMACCommandErrorCount = 3
 
 	c.NetworkServer.Scheduler.SchedulerInterval = time.Second
 
@@ -69,6 +60,10 @@ func GetConfig() config.Config {
 	c.NetworkServer.Gateway.Backend.MQTT.CleanSession = true
 	c.NetworkServer.Gateway.Backend.MQTT.EventTopic = "gateway/+/event/+"
 	c.NetworkServer.Gateway.Backend.MQTT.CommandTopicTemplate = "gateway/{{ .GatewayID }}/command/{{ .CommandType }}"
+
+	c.NetworkServer.Gateway.Backend.AMQP.EventQueueName = "gateway-events"
+	c.NetworkServer.Gateway.Backend.AMQP.EventRoutingKey = "gateway.*.event.*"
+	c.NetworkServer.Gateway.Backend.AMQP.CommandRoutingKeyTemplate = "gateway.{{ .GatewayID }}.command.{{ .CommandType }}"
 
 	if v := os.Getenv("TEST_REDIS_URL"); v != "" {
 		c.Redis.URL = v
@@ -85,30 +80,11 @@ func GetConfig() config.Config {
 	if v := os.Getenv("TEST_MQTT_PASSWORD"); v != "" {
 		c.NetworkServer.Gateway.Backend.MQTT.Password = v
 	}
+	if v := os.Getenv("TEST_RABBITMQ_URL"); v != "" {
+		c.NetworkServer.Gateway.Backend.AMQP.URL = v
+	}
 
 	return c
-}
-
-// MustFlushRedis flushes the Redis storage.
-func MustFlushRedis(p *redis.Pool) {
-	c := p.Get()
-	defer c.Close()
-	if _, err := c.Do("FLUSHALL"); err != nil {
-		log.Fatal(err)
-	}
-}
-
-// MustPrefillRedisPool pre-fills the pool with count connections.
-func MustPrefillRedisPool(p *redis.Pool, count int) {
-	conns := []redis.Conn{}
-
-	for i := 0; i < count; i++ {
-		conns = append(conns, p.Get())
-	}
-
-	for i := range conns {
-		conns[i].Close()
-	}
 }
 
 // MustResetDB re-applies all database migrations.
@@ -205,6 +181,7 @@ type ApplicationClient struct {
 	HandleDataUpErr         error
 	HandleProprietaryUpErr  error
 	HandleDownlinkACKErr    error
+	HandleTxAckError        error
 	SetDeviceStatusError    error
 	SetDeviceLocationErrror error
 
@@ -212,6 +189,7 @@ type ApplicationClient struct {
 	HandleProprietaryUpChan chan as.HandleProprietaryUplinkRequest
 	HandleErrorChan         chan as.HandleErrorRequest
 	HandleDownlinkACKChan   chan as.HandleDownlinkACKRequest
+	HandleTxAckChan         chan as.HandleTxAckRequest
 	HandleGatewayStatsChan  chan as.HandleGatewayStatsRequest
 	SetDeviceStatusChan     chan as.SetDeviceStatusRequest
 	SetDeviceLocationChan   chan as.SetDeviceLocationRequest
@@ -220,6 +198,7 @@ type ApplicationClient struct {
 	HandleProprietaryUpResponse empty.Empty
 	HandleErrorResponse         empty.Empty
 	HandleDownlinkACKResponse   empty.Empty
+	HandleTxAckResponse         empty.Empty
 	HandleGatewayStatsResponse  empty.Empty
 	SetDeviceStatusResponse     empty.Empty
 	SetDeviceLocationResponse   empty.Empty
@@ -232,6 +211,7 @@ func NewApplicationClient() *ApplicationClient {
 		HandleProprietaryUpChan: make(chan as.HandleProprietaryUplinkRequest, 100),
 		HandleErrorChan:         make(chan as.HandleErrorRequest, 100),
 		HandleDownlinkACKChan:   make(chan as.HandleDownlinkACKRequest, 100),
+		HandleTxAckChan:         make(chan as.HandleTxAckRequest, 100),
 		HandleGatewayStatsChan:  make(chan as.HandleGatewayStatsRequest, 100),
 		SetDeviceStatusChan:     make(chan as.SetDeviceStatusRequest, 100),
 		SetDeviceLocationChan:   make(chan as.SetDeviceLocationRequest, 100),
@@ -268,6 +248,12 @@ func (t *ApplicationClient) HandleDownlinkACK(ctx context.Context, in *as.Handle
 	return &t.HandleDownlinkACKResponse, nil
 }
 
+// HandleTxAck method.
+func (t *ApplicationClient) HandleTxAck(ctx context.Context, in *as.HandleTxAckRequest, opts ...grpc.CallOption) (*empty.Empty, error) {
+	t.HandleTxAckChan <- *in
+	return &t.HandleTxAckResponse, nil
+}
+
 // HandleGatewayStats method.
 func (t *ApplicationClient) HandleGatewayStats(ctx context.Context, in *as.HandleGatewayStatsRequest, opts ...grpc.CallOption) (*empty.Empty, error) {
 	t.HandleGatewayStatsChan <- *in
@@ -288,21 +274,19 @@ func (t *ApplicationClient) SetDeviceLocation(ctx context.Context, in *as.SetDev
 
 // NetworkControllerClient is a network-controller client for testing.
 type NetworkControllerClient struct {
-	HandleUplinkMetaDataChan   chan nc.HandleUplinkMetaDataRequest
-	HandleDownlinkMetaDataChan chan nc.HandleDownlinkMetaDataRequest
-	HandleDataUpMACCommandChan chan nc.HandleUplinkMACCommandRequest
-
-	HandleRXInfoResponse           empty.Empty
-	HandleDownlinkMetaDataResponse empty.Empty
-	HandleDataUpMACCommandResponse empty.Empty
+	HandleUplinkMetaDataChan         chan nc.HandleUplinkMetaDataRequest
+	HandleDownlinkMetaDataChan       chan nc.HandleDownlinkMetaDataRequest
+	HandleDataUpMACCommandChan       chan nc.HandleUplinkMACCommandRequest
+	HandleRejectedUplinkFrameSetChan chan nc.HandleRejectedUplinkFrameSetRequest
 }
 
 // NewNetworkControllerClient returns a new NetworkControllerClient.
 func NewNetworkControllerClient() *NetworkControllerClient {
 	return &NetworkControllerClient{
-		HandleUplinkMetaDataChan:   make(chan nc.HandleUplinkMetaDataRequest, 100),
-		HandleDownlinkMetaDataChan: make(chan nc.HandleDownlinkMetaDataRequest, 100),
-		HandleDataUpMACCommandChan: make(chan nc.HandleUplinkMACCommandRequest, 100),
+		HandleUplinkMetaDataChan:         make(chan nc.HandleUplinkMetaDataRequest, 100),
+		HandleDownlinkMetaDataChan:       make(chan nc.HandleDownlinkMetaDataRequest, 100),
+		HandleDataUpMACCommandChan:       make(chan nc.HandleUplinkMACCommandRequest, 100),
+		HandleRejectedUplinkFrameSetChan: make(chan nc.HandleRejectedUplinkFrameSetRequest, 100),
 	}
 }
 
@@ -321,6 +305,12 @@ func (t *NetworkControllerClient) HandleDownlinkMetaData(ctx context.Context, in
 // HandleUplinkMACCommand method.
 func (t *NetworkControllerClient) HandleUplinkMACCommand(ctx context.Context, in *nc.HandleUplinkMACCommandRequest, opts ...grpc.CallOption) (*empty.Empty, error) {
 	t.HandleDataUpMACCommandChan <- *in
+	return &empty.Empty{}, nil
+}
+
+// HandleRejectedUplinkFrameSet method.
+func (t *NetworkControllerClient) HandleRejectedUplinkFrameSet(ctx context.Context, in *nc.HandleRejectedUplinkFrameSetRequest, opts ...grpc.CallOption) (*empty.Empty, error) {
+	t.HandleRejectedUplinkFrameSetChan <- *in
 	return &empty.Empty{}, nil
 }
 

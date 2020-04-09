@@ -5,10 +5,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 
-	"github.com/brocaar/loraserver/internal/downlink/data"
-	"github.com/brocaar/loraserver/internal/downlink/multicast"
-	"github.com/brocaar/loraserver/internal/downlink/proprietary"
-	"github.com/brocaar/loraserver/internal/storage"
+	"github.com/brocaar/chirpstack-network-server/internal/downlink/data"
+	"github.com/brocaar/chirpstack-network-server/internal/downlink/multicast"
+	"github.com/brocaar/chirpstack-network-server/internal/downlink/proprietary"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
 )
 
 var errToCode = map[error]codes.Code{
@@ -22,12 +22,11 @@ var errToCode = map[error]codes.Code{
 
 	multicast.ErrInvalidFCnt: codes.InvalidArgument,
 
-	storage.ErrAlreadyExists:                  codes.AlreadyExists,
-	storage.ErrDoesNotExistOrFCntOrMICInvalid: codes.NotFound,
-	storage.ErrDoesNotExist:                   codes.NotFound,
-	storage.ErrInvalidName:                    codes.InvalidArgument,
-	storage.ErrInvalidAggregationInterval:     codes.InvalidArgument,
-	storage.ErrInvalidFPort:                   codes.InvalidArgument,
+	storage.ErrAlreadyExists:              codes.AlreadyExists,
+	storage.ErrDoesNotExist:               codes.NotFound,
+	storage.ErrInvalidName:                codes.InvalidArgument,
+	storage.ErrInvalidAggregationInterval: codes.InvalidArgument,
+	storage.ErrInvalidFPort:               codes.InvalidArgument,
 }
 
 func errToRPCError(err error) error {

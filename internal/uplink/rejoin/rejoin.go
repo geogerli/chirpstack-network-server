@@ -11,17 +11,17 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/brocaar/loraserver/api/nc"
-	"github.com/brocaar/loraserver/internal/backend/controller"
-	"github.com/brocaar/loraserver/internal/backend/joinserver"
-	"github.com/brocaar/loraserver/internal/band"
-	"github.com/brocaar/loraserver/internal/config"
-	joindown "github.com/brocaar/loraserver/internal/downlink/join"
-	"github.com/brocaar/loraserver/internal/framelog"
-	"github.com/brocaar/loraserver/internal/helpers"
-	"github.com/brocaar/loraserver/internal/logging"
-	"github.com/brocaar/loraserver/internal/models"
-	"github.com/brocaar/loraserver/internal/storage"
+	"github.com/brocaar/chirpstack-api/go/v3/nc"
+	"github.com/brocaar/chirpstack-network-server/internal/backend/controller"
+	"github.com/brocaar/chirpstack-network-server/internal/backend/joinserver"
+	"github.com/brocaar/chirpstack-network-server/internal/band"
+	"github.com/brocaar/chirpstack-network-server/internal/config"
+	joindown "github.com/brocaar/chirpstack-network-server/internal/downlink/join"
+	"github.com/brocaar/chirpstack-network-server/internal/framelog"
+	"github.com/brocaar/chirpstack-network-server/internal/helpers"
+	"github.com/brocaar/chirpstack-network-server/internal/logging"
+	"github.com/brocaar/chirpstack-network-server/internal/models"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
 	"github.com/brocaar/lorawan"
 	"github.com/brocaar/lorawan/backend"
 	loraband "github.com/brocaar/lorawan/band"
@@ -164,7 +164,7 @@ func logRejoinRequestFramesCollected(ctx *rejoinContext) error {
 		return errors.Wrap(err, "create uplink frame-set error")
 	}
 
-	if err := framelog.LogUplinkFrameForDevEUI(ctx.ctx, storage.RedisPool(), ctx.DevEUI, uplinkFrameSet); err != nil {
+	if err := framelog.LogUplinkFrameForDevEUI(ctx.ctx, ctx.DevEUI, uplinkFrameSet); err != nil {
 		log.WithError(err).Error("log uplink frame for device error")
 	}
 
@@ -206,7 +206,7 @@ func getDeviceAndProfiles(ctx *rejoinContext) error {
 
 func getDeviceSession(ctx *rejoinContext) error {
 	var err error
-	ctx.DeviceSession, err = storage.GetDeviceSession(ctx.ctx, storage.RedisPool(), ctx.DevEUI)
+	ctx.DeviceSession, err = storage.GetDeviceSession(ctx.ctx, ctx.DevEUI)
 	if err != nil {
 		return errors.Wrap(err, "get device-session error")
 	}
@@ -465,7 +465,7 @@ func setRejoin0PendingDeviceSession(ctx *rejoinContext) error {
 
 	ctx.DeviceSession.PendingRejoinDeviceSession = &pendingDS
 
-	if err := storage.SaveDeviceSession(ctx.ctx, storage.RedisPool(), ctx.DeviceSession); err != nil {
+	if err := storage.SaveDeviceSession(ctx.ctx, ctx.DeviceSession); err != nil {
 		return errors.Wrap(err, "save device-session error")
 	}
 
@@ -527,7 +527,7 @@ func setRejoin2PendingDeviceSession(ctx *rejoinContext) error {
 
 	ctx.DeviceSession.PendingRejoinDeviceSession = &pendingDS
 
-	if err := storage.SaveDeviceSession(ctx.ctx, storage.RedisPool(), ctx.DeviceSession); err != nil {
+	if err := storage.SaveDeviceSession(ctx.ctx, ctx.DeviceSession); err != nil {
 		return errors.Wrap(err, "save device-session error")
 	}
 

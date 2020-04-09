@@ -1,25 +1,23 @@
-//go:generate protoc -I=. -I=../.. --go_out=. device_session.proto
+//go:generate protoc -I=/tmp/chirpstack-api/protobuf -I=. --go_out=. device_session.proto
 
 package storage
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/gob"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/go-redis/redis/v7"
 	"github.com/gofrs/uuid"
 	proto "github.com/golang/protobuf/proto"
-	"github.com/gomodule/redigo/redis"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/brocaar/loraserver/api/common"
-	"github.com/brocaar/loraserver/internal/band"
-	"github.com/brocaar/loraserver/internal/logging"
+	"github.com/brocaar/chirpstack-api/go/v3/common"
+	"github.com/brocaar/chirpstack-network-server/internal/band"
+	"github.com/brocaar/chirpstack-network-server/internal/logging"
 	"github.com/brocaar/lorawan"
 	loraband "github.com/brocaar/lorawan/band"
 )
@@ -177,6 +175,9 @@ type DeviceSession struct {
 
 	// Max uplink EIRP limitation.
 	UplinkMaxEIRPIndex uint8
+
+	// Delayed mac-commands.
+	MACCommandErrorCount map[lorawan.CID]int
 }
 
 // AppendUplinkHistory appends an UplinkHistory item and makes sure the list
@@ -277,44 +278,66 @@ func GetRandomDevAddr(netID lorawan.NetID) (lorawan.DevAddr, error) {
 	return d, nil
 }
 
-// ValidateAndGetFullFCntUp validates if the given fCntUp is valid
-// and returns the full 32 bit frame-counter.
-// Note that the LoRaWAN packet only contains the 16 LSB, so in order
-// to validate the MIC, the full 32 bit frame-counter needs to be set.
-// After a succesful validation of the FCntUp and the MIC, don't forget
-// to synchronize the Node FCntUp with the packet FCnt.
-func ValidateAndGetFullFCntUp(s DeviceSession, fCntUp uint32) (uint32, bool) {
-	// we need to compare the difference of the 16 LSB
-	gap := uint32(uint16(fCntUp) - uint16(s.FCntUp%65536))
-	if gap < band.Band().GetDefaults().MaxFCntGap {
-		return s.FCntUp + gap, true
+// GetFullFCntUp returns the full 32bit frame-counter, given the fCntUp which
+// has been truncated to the last 16 LSB.
+// Notes:
+// * After a succesful validation of the FCntUp and the MIC, don't forget
+//   to synchronize the device FCntUp with the packet FCnt.
+// * In case of a frame-counter rollover, the returned values will be less
+//   than the given DeviceSession FCntUp. This must be validated outside this
+//   function!
+// * In case of a re-transmission, the returned frame-counter equals
+//   DeviceSession.FCntUp - 1, as the FCntUp value holds the next expected
+//   frame-counter, not the FCntUp which was last seen.
+func GetFullFCntUp(s DeviceSession, fCntUp uint32) uint32 {
+	// Handle re-transmission.
+	// Note: the s.FCntUp value holds the next expected uplink frame-counter,
+	// therefore this function returns sFCntUp - 1 in case of a re-transmission.
+	if fCntUp == uint32(uint16(s.FCntUp%(1<<16))-1) {
+		return s.FCntUp - 1
 	}
-	return 0, false
+	gap := uint32(uint16(fCntUp) - uint16(s.FCntUp%(1<<16)))
+	return s.FCntUp + gap
 }
 
 // SaveDeviceSession saves the device-session. In case it doesn't exist yet
 // it will be created.
-func SaveDeviceSession(ctx context.Context, p *redis.Pool, s DeviceSession) error {
+func SaveDeviceSession(ctx context.Context, s DeviceSession) error {
+	devAddrKey := fmt.Sprintf(devAddrKeyTempl, s.DevAddr)
+	devSessKey := fmt.Sprintf(deviceSessionKeyTempl, s.DevEUI)
+
 	dsPB := deviceSessionToPB(s)
 	b, err := proto.Marshal(&dsPB)
 	if err != nil {
 		return errors.Wrap(err, "protobuf encode error")
 	}
 
-	c := p.Get()
-	defer c.Close()
-	exp := int64(deviceSessionTTL) / int64(time.Millisecond)
+	// Note that we must execute the DevAddr set related operations in multiple
+	// tx pipelines in order to support Redis Cluster. It can not be guaranteed
+	// that devAddrKey, pendingDevAddrKey and DevSessKey are on the same Cluster
+	// shard.
 
-	c.Send("MULTI")
-	c.Send("PSETEX", fmt.Sprintf(deviceSessionKeyTempl, s.DevEUI), exp, b)
-	c.Send("SADD", fmt.Sprintf(devAddrKeyTempl, s.DevAddr), s.DevEUI[:])
-	c.Send("PEXPIRE", fmt.Sprintf(devAddrKeyTempl, s.DevAddr), exp)
-	if s.PendingRejoinDeviceSession != nil {
-		c.Send("SADD", fmt.Sprintf(devAddrKeyTempl, s.PendingRejoinDeviceSession.DevAddr), s.DevEUI[:])
-		c.Send("PEXPIRE", fmt.Sprintf(devAddrKeyTempl, s.PendingRejoinDeviceSession.DevAddr), exp)
-	}
-	if _, err := c.Do("EXEC"); err != nil {
+	pipe := RedisClient().TxPipeline()
+	pipe.SAdd(devAddrKey, s.DevEUI[:])
+	pipe.PExpire(devAddrKey, deviceSessionTTL)
+	if _, err := pipe.Exec(); err != nil {
 		return errors.Wrap(err, "exec error")
+	}
+
+	if s.PendingRejoinDeviceSession != nil {
+		pendingDevAddrKey := fmt.Sprintf(devAddrKeyTempl, s.PendingRejoinDeviceSession.DevAddr)
+
+		pipe = RedisClient().TxPipeline()
+		pipe.SAdd(pendingDevAddrKey, s.DevEUI[:])
+		pipe.PExpire(pendingDevAddrKey, deviceSessionTTL)
+		if _, err := pipe.Exec(); err != nil {
+			return errors.Wrap(err, "exec error")
+		}
+	}
+
+	err = RedisClient().Set(devSessKey, b, deviceSessionTTL).Err()
+	if err != nil {
+		return errors.Wrap(err, "set error")
 	}
 
 	log.WithFields(log.Fields{
@@ -327,15 +350,13 @@ func SaveDeviceSession(ctx context.Context, p *redis.Pool, s DeviceSession) erro
 }
 
 // GetDeviceSession returns the device-session for the given DevEUI.
-func GetDeviceSession(ctx context.Context, p *redis.Pool, devEUI lorawan.EUI64) (DeviceSession, error) {
+func GetDeviceSession(ctx context.Context, devEUI lorawan.EUI64) (DeviceSession, error) {
+	key := fmt.Sprintf(deviceSessionKeyTempl, devEUI)
 	var dsPB DeviceSessionPB
 
-	c := p.Get()
-	defer c.Close()
-
-	val, err := redis.Bytes(c.Do("GET", fmt.Sprintf(deviceSessionKeyTempl, devEUI)))
+	val, err := RedisClient().Get(key).Bytes()
 	if err != nil {
-		if err == redis.ErrNil {
+		if err == redis.Nil {
 			return DeviceSession{}, ErrDoesNotExist
 		}
 		return DeviceSession{}, errors.Wrap(err, "get error")
@@ -343,31 +364,24 @@ func GetDeviceSession(ctx context.Context, p *redis.Pool, devEUI lorawan.EUI64) 
 
 	err = proto.Unmarshal(val, &dsPB)
 	if err != nil {
-		// fallback on old gob encoding
-		var dsOld DeviceSessionOld
-		err = gob.NewDecoder(bytes.NewReader(val)).Decode(&dsOld)
-		if err != nil {
-			return DeviceSession{}, errors.Wrap(err, "gob decode error")
-		}
-
-		return migrateDeviceSessionOld(dsOld), nil
+		return DeviceSession{}, errors.Wrap(err, "unmarshal protobuf error")
 	}
 
 	return deviceSessionFromPB(dsPB), nil
 }
 
 // DeleteDeviceSession deletes the device-session matching the given DevEUI.
-func DeleteDeviceSession(ctx context.Context, p *redis.Pool, devEUI lorawan.EUI64) error {
-	c := p.Get()
-	defer c.Close()
+func DeleteDeviceSession(ctx context.Context, devEUI lorawan.EUI64) error {
+	key := fmt.Sprintf(deviceSessionKeyTempl, devEUI)
 
-	val, err := redis.Int(c.Do("DEL", fmt.Sprintf(deviceSessionKeyTempl, devEUI)))
+	val, err := RedisClient().Del(key).Result()
 	if err != nil {
 		return errors.Wrap(err, "delete error")
 	}
 	if val == 0 {
 		return ErrDoesNotExist
 	}
+
 	log.WithFields(log.Fields{
 		"dev_eui": devEUI,
 		"ctx_id":  ctx.Value(logging.ContextIDKey),
@@ -378,25 +392,16 @@ func DeleteDeviceSession(ctx context.Context, p *redis.Pool, devEUI lorawan.EUI6
 // GetDeviceSessionsForDevAddr returns a slice of device-sessions using the
 // given DevAddr. When no device-session is using the given DevAddr, this returns
 // an empty slice.
-func GetDeviceSessionsForDevAddr(ctx context.Context, p *redis.Pool, devAddr lorawan.DevAddr) ([]DeviceSession, error) {
+func GetDeviceSessionsForDevAddr(ctx context.Context, devAddr lorawan.DevAddr) ([]DeviceSession, error) {
 	var items []DeviceSession
 
-	c := p.Get()
-	defer c.Close()
-
-	devEUIs, err := redis.ByteSlices(c.Do("SMEMBERS", fmt.Sprintf(devAddrKeyTempl, devAddr)))
+	devEUIs, err := GetDevEUIsForDevAddr(ctx, devAddr)
 	if err != nil {
-		if err == redis.ErrNil {
-			return items, nil
-		}
-		return nil, errors.Wrap(err, "get members error")
+		return nil, err
 	}
 
-	for _, b := range devEUIs {
-		var devEUI lorawan.EUI64
-		copy(devEUI[:], b)
-
-		s, err := GetDeviceSession(ctx, p, devEUI)
+	for _, devEUI := range devEUIs {
+		s, err := GetDeviceSession(ctx, devEUI)
 		if err != nil {
 			// TODO: in case not found, remove the DevEUI from the list
 			log.WithFields(log.Fields{
@@ -423,83 +428,103 @@ func GetDeviceSessionsForDevAddr(ctx context.Context, p *redis.Pool, devAddr lor
 	return items, nil
 }
 
+// GetDevEUIsForDevAddr returns the DevEUIs that are using the given DevAddr.
+func GetDevEUIsForDevAddr(ctx context.Context, devAddr lorawan.DevAddr) ([]lorawan.EUI64, error) {
+	key := fmt.Sprintf(devAddrKeyTempl, devAddr)
+
+	val, err := RedisClient().SMembers(key).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, nil
+		}
+		return nil, errors.Wrap(err, "get deveuis for devaddr error")
+	}
+
+	var out []lorawan.EUI64
+	for i := range val {
+		var devEUI lorawan.EUI64
+		copy(devEUI[:], []byte(val[i]))
+		out = append(out, devEUI)
+	}
+
+	return out, nil
+}
+
 // GetDeviceSessionForPHYPayload returns the device-session matching the given
 // PHYPayload. This will fetch all device-sessions associated with the used
 // DevAddr and based on FCnt and MIC decide which one to use.
-func GetDeviceSessionForPHYPayload(ctx context.Context, p *redis.Pool, phy lorawan.PHYPayload, txDR, txCh int) (DeviceSession, error) {
+func GetDeviceSessionForPHYPayload(ctx context.Context, phy lorawan.PHYPayload, txDR, txCh int) (DeviceSession, error) {
 	macPL, ok := phy.MACPayload.(*lorawan.MACPayload)
 	if !ok {
 		return DeviceSession{}, fmt.Errorf("expected *lorawan.MACPayload, got: %T", phy.MACPayload)
 	}
 	originalFCnt := macPL.FHDR.FCnt
 
-	sessions, err := GetDeviceSessionsForDevAddr(ctx, p, macPL.FHDR.DevAddr)
+	deviceSessions, err := GetDeviceSessionsForDevAddr(ctx, macPL.FHDR.DevAddr)
 	if err != nil {
 		return DeviceSession{}, err
 	}
+	if len(deviceSessions) == 0 {
+		return DeviceSession{}, ErrDoesNotExist
+	}
 
-	for _, s := range sessions {
-		// reset to the original FCnt
+	for _, ds := range deviceSessions {
+		// restore the original frame-counter
 		macPL.FHDR.FCnt = originalFCnt
-		// get full FCnt
-		fullFCnt, ok := ValidateAndGetFullFCntUp(s, macPL.FHDR.FCnt)
-		if !ok {
-			// If RelaxFCnt is turned on, just trust the uplink FCnt
-			// this is insecure, but has been requested by many people for
-			// debugging purposes.
-			// Note that we do not reset the FCntDown as this would reset the
-			// downlink frame-counter on a re-transmit, which is not what we
-			// want.
-			if s.SkipFCntValidation {
-				fullFCnt = macPL.FHDR.FCnt
-				s.FCntUp = macPL.FHDR.FCnt
-				s.UplinkHistory = []UplinkHistory{}
 
-				// validate if the mic is valid given the FCnt reset
-				// note that we can always set the ConfFCnt as the validation
-				// function will only use it when the ACK bit is set
-				micOK, err := phy.ValidateUplinkDataMIC(s.GetMACVersion(), s.ConfFCnt, uint8(txDR), uint8(txCh), s.FNwkSIntKey, s.SNwkSIntKey)
-				if err != nil {
-					return DeviceSession{}, errors.Wrap(err, "validate mic error")
-				}
+		// get the full frame-counter (from 16bit to 32bit)
+		fullFCnt := GetFullFCntUp(ds, macPL.FHDR.FCnt)
 
-				if micOK {
-					// we need to update the NodeSession
-					if err := SaveDeviceSession(ctx, p, s); err != nil {
-						return DeviceSession{}, err
-					}
-					log.WithFields(log.Fields{
-						"dev_addr": macPL.FHDR.DevAddr,
-						"dev_eui":  s.DevEUI,
-						"ctx_id":   ctx.Value(logging.ContextIDKey),
-					}).Warning("frame counters reset")
-					return s, nil
-				}
+		// Check both the full frame-counter and the received frame-counter
+		// truncated to the 16LSB.
+		// The latter is needed in case of a frame-counter reset as the
+		// GetFullFCntUp will think the 16LSB has rolled over and will
+		// increment the 16MSB bit.
+		var micOK bool
+		for _, fullFCnt := range []uint32{fullFCnt, originalFCnt} {
+			macPL.FHDR.FCnt = fullFCnt
+			micOK, err = phy.ValidateUplinkDataMIC(ds.GetMACVersion(), ds.ConfFCnt, uint8(txDR), uint8(txCh), ds.FNwkSIntKey, ds.SNwkSIntKey)
+			if err != nil {
+				// this is not related to a bad MIC, but is a software error
+				return DeviceSession{}, errors.Wrap(err, "validate mic error")
 			}
-			// try the next node-session
-			continue
+
+			if micOK {
+				break
+			}
 		}
 
-		// the FCnt is valid, validate the MIC
-		macPL.FHDR.FCnt = fullFCnt
-		micOK, err := phy.ValidateUplinkDataMIC(s.GetMACVersion(), s.ConfFCnt, uint8(txDR), uint8(txCh), s.FNwkSIntKey, s.SNwkSIntKey)
-		if err != nil {
-			return DeviceSession{}, errors.Wrap(err, "validate mic error")
-		}
 		if micOK {
-			return s, nil
+			if macPL.FHDR.FCnt >= ds.FCntUp {
+				// the frame-counter is greater than or equal to the expected value
+				return ds, nil
+			} else if ds.SkipFCntValidation {
+				// re-transmission or frame-counter reset
+				ds.FCntUp = 0
+				ds.UplinkHistory = []UplinkHistory{}
+				return ds, nil
+			} else if macPL.FHDR.FCnt == (ds.FCntUp - 1) {
+				// re-transmission, the frame-counter did not increment
+				return ds, ErrFrameCounterRetransmission
+			} else {
+				// frame-counter reset or roll-over happened
+				return ds, ErrFrameCounterReset
+			}
 		}
 	}
 
-	return DeviceSession{}, ErrDoesNotExistOrFCntOrMICInvalid
+	// Return the first device-session. We could not validate if this is the
+	// device-session matching the uplink DevAddr, but it could still provide
+	// value to forward the MIC error to the AS in the Routing Profile of the
+	// device-session.
+	return deviceSessions[0], ErrInvalidMIC
 }
 
 // DeviceSessionExists returns a bool indicating if a device session exist.
-func DeviceSessionExists(ctx context.Context, p *redis.Pool, devEUI lorawan.EUI64) (bool, error) {
-	c := p.Get()
-	defer c.Close()
+func DeviceSessionExists(ctx context.Context, devEUI lorawan.EUI64) (bool, error) {
+	key := fmt.Sprintf(deviceSessionKeyTempl, devEUI)
 
-	r, err := redis.Int(c.Do("EXISTS", fmt.Sprintf(deviceSessionKeyTempl, devEUI)))
+	r, err := RedisClient().Exists(key).Result()
 	if err != nil {
 		return false, errors.Wrap(err, "get exists error")
 	}
@@ -510,17 +535,16 @@ func DeviceSessionExists(ctx context.Context, p *redis.Pool, devEUI lorawan.EUI6
 }
 
 // SaveDeviceGatewayRXInfoSet saves the given DeviceGatewayRXInfoSet.
-func SaveDeviceGatewayRXInfoSet(ctx context.Context, p *redis.Pool, rxInfoSet DeviceGatewayRXInfoSet) error {
+func SaveDeviceGatewayRXInfoSet(ctx context.Context, rxInfoSet DeviceGatewayRXInfoSet) error {
+	key := fmt.Sprintf(deviceGatewayRXInfoSetKeyTempl, rxInfoSet.DevEUI)
+
 	rxInfoSetPB := deviceGatewayRXInfoSetToPB(rxInfoSet)
 	b, err := proto.Marshal(&rxInfoSetPB)
 	if err != nil {
 		return errors.Wrap(err, "protobuf encode error")
 	}
 
-	c := p.Get()
-	defer c.Close()
-	exp := int64(deviceSessionTTL / time.Millisecond)
-	_, err = c.Do("PSETEX", fmt.Sprintf(deviceGatewayRXInfoSetKeyTempl, rxInfoSet.DevEUI), exp, b)
+	err = RedisClient().Set(key, b, deviceSessionTTL).Err()
 	if err != nil {
 		return errors.Wrap(err, "psetex error")
 	}
@@ -535,17 +559,17 @@ func SaveDeviceGatewayRXInfoSet(ctx context.Context, p *redis.Pool, rxInfoSet De
 
 // DeleteDeviceGatewayRXInfoSet deletes the device gateway rx-info meta-data
 // for the given Device EUI.
-func DeleteDeviceGatewayRXInfoSet(ctx context.Context, p *redis.Pool, devEUI lorawan.EUI64) error {
-	c := p.Get()
-	defer c.Close()
+func DeleteDeviceGatewayRXInfoSet(ctx context.Context, devEUI lorawan.EUI64) error {
+	key := fmt.Sprintf(deviceGatewayRXInfoSetKeyTempl, devEUI)
 
-	val, err := redis.Int(c.Do("DEL", fmt.Sprintf(deviceGatewayRXInfoSetKeyTempl, devEUI)))
+	val, err := RedisClient().Del(key).Result()
 	if err != nil {
 		return errors.Wrap(err, "delete error")
 	}
 	if val == 0 {
 		return ErrDoesNotExist
 	}
+
 	log.WithFields(log.Fields{
 		"dev_eui": devEUI,
 		"ctx_id":  ctx.Value(logging.ContextIDKey),
@@ -555,15 +579,13 @@ func DeleteDeviceGatewayRXInfoSet(ctx context.Context, p *redis.Pool, devEUI lor
 
 // GetDeviceGatewayRXInfoSet returns the DeviceGatewayRXInfoSet for the given
 // Device EUI.
-func GetDeviceGatewayRXInfoSet(ctx context.Context, p *redis.Pool, devEUI lorawan.EUI64) (DeviceGatewayRXInfoSet, error) {
+func GetDeviceGatewayRXInfoSet(ctx context.Context, devEUI lorawan.EUI64) (DeviceGatewayRXInfoSet, error) {
 	var rxInfoSetPB DeviceGatewayRXInfoSetPB
+	key := fmt.Sprintf(deviceGatewayRXInfoSetKeyTempl, devEUI)
 
-	c := p.Get()
-	defer c.Close()
-
-	val, err := redis.Bytes(c.Do("GET", fmt.Sprintf(deviceGatewayRXInfoSetKeyTempl, devEUI)))
+	val, err := RedisClient().Get(key).Bytes()
 	if err != nil {
-		if err == redis.ErrNil {
+		if err == redis.Nil {
 			return DeviceGatewayRXInfoSet{}, ErrDoesNotExist
 		}
 		return DeviceGatewayRXInfoSet{}, errors.Wrap(err, "get error")
@@ -579,29 +601,28 @@ func GetDeviceGatewayRXInfoSet(ctx context.Context, p *redis.Pool, devEUI lorawa
 
 // GetDeviceGatewayRXInfoSetForDevEUIs returns the DeviceGatewayRXInfoSet
 // objects for the given Device EUIs.
-func GetDeviceGatewayRXInfoSetForDevEUIs(ctx context.Context, p *redis.Pool, devEUIs []lorawan.EUI64) ([]DeviceGatewayRXInfoSet, error) {
+func GetDeviceGatewayRXInfoSetForDevEUIs(ctx context.Context, devEUIs []lorawan.EUI64) ([]DeviceGatewayRXInfoSet, error) {
 	if len(devEUIs) == 0 {
 		return nil, nil
 	}
 
-	var keys []interface{}
+	var keys []string
 	for _, d := range devEUIs {
 		keys = append(keys, fmt.Sprintf(deviceGatewayRXInfoSetKeyTempl, d))
 	}
 
-	c := p.Get()
-	defer c.Close()
-
-	bs, err := redis.ByteSlices(c.Do("MGET", keys...))
+	bs, err := RedisClient().MGet(keys...).Result()
 	if err != nil {
 		return nil, errors.Wrap(err, "get byte slices error")
 	}
 
 	var out []DeviceGatewayRXInfoSet
-	for _, b := range bs {
-		if len(b) == 0 {
+	for _, val := range bs {
+		if val == nil {
 			continue
 		}
+
+		b := []byte(val.(string))
 
 		var rxInfoSetPB DeviceGatewayRXInfoSetPB
 		if err = proto.Unmarshal(b, &rxInfoSetPB); err != nil {
@@ -670,6 +691,8 @@ func deviceSessionToPB(d DeviceSession) DeviceSessionPB {
 		UplinkDwellTime_400Ms:   d.UplinkDwellTime400ms,
 		DownlinkDwellTime_400Ms: d.DownlinkDwellTime400ms,
 		UplinkMaxEirpIndex:      uint32(d.UplinkMaxEIRPIndex),
+
+		MacCommandErrorCount: make(map[uint32]uint32),
 	}
 
 	if d.AppSKeyEvelope != nil {
@@ -712,6 +735,10 @@ func deviceSessionToPB(d DeviceSession) DeviceSessionPB {
 		}
 
 		out.PendingRejoinDeviceSession = b
+	}
+
+	for k, v := range d.MACCommandErrorCount {
+		out.MacCommandErrorCount[uint32(k)] = uint32(v)
 	}
 
 	return out
@@ -764,6 +791,8 @@ func deviceSessionFromPB(d DeviceSessionPB) DeviceSession {
 		UplinkDwellTime400ms:   d.UplinkDwellTime_400Ms,
 		DownlinkDwellTime400ms: d.DownlinkDwellTime_400Ms,
 		UplinkMaxEIRPIndex:     uint8(d.UplinkMaxEirpIndex),
+
+		MACCommandErrorCount: make(map[lorawan.CID]int),
 	}
 
 	if d.LastDeviceStatusRequestTimeUnixNs > 0 {
@@ -821,6 +850,10 @@ func deviceSessionFromPB(d DeviceSessionPB) DeviceSession {
 			ds := deviceSessionFromPB(dsPB)
 			out.PendingRejoinDeviceSession = &ds
 		}
+	}
+
+	for k, v := range d.MacCommandErrorCount {
+		out.MACCommandErrorCount[lorawan.CID(k)] = int(v)
 	}
 
 	return out

@@ -9,10 +9,10 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/brocaar/loraserver/internal/downlink/data"
-	"github.com/brocaar/loraserver/internal/downlink/multicast"
-	"github.com/brocaar/loraserver/internal/logging"
-	"github.com/brocaar/loraserver/internal/storage"
+	"github.com/brocaar/chirpstack-network-server/internal/downlink/data"
+	"github.com/brocaar/chirpstack-network-server/internal/downlink/multicast"
+	"github.com/brocaar/chirpstack-network-server/internal/logging"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
 )
 
 // DeviceQueueSchedulerLoop starts an infinit loop calling the scheduler loop for Class-B
@@ -72,7 +72,7 @@ func ScheduleDeviceQueueBatch(ctx context.Context, size int) error {
 		}
 
 		for _, d := range devices {
-			ds, err := storage.GetDeviceSession(ctx, storage.RedisPool(), d.DevEUI)
+			ds, err := storage.GetDeviceSession(ctx, d.DevEUI)
 			if err != nil {
 				log.WithError(err).WithFields(log.Fields{
 					"dev_eui": d.DevEUI,

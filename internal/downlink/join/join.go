@@ -8,23 +8,23 @@ import (
 	"github.com/gofrs/uuid"
 	"github.com/golang/protobuf/ptypes"
 	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
 
-	"github.com/brocaar/loraserver/api/gw"
-	"github.com/brocaar/loraserver/internal/backend/gateway"
-	"github.com/brocaar/loraserver/internal/band"
-	"github.com/brocaar/loraserver/internal/config"
-	"github.com/brocaar/loraserver/internal/framelog"
-	"github.com/brocaar/loraserver/internal/helpers"
-	"github.com/brocaar/loraserver/internal/logging"
-	"github.com/brocaar/loraserver/internal/models"
-	"github.com/brocaar/loraserver/internal/storage"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-network-server/internal/backend/gateway"
+	"github.com/brocaar/chirpstack-network-server/internal/band"
+	"github.com/brocaar/chirpstack-network-server/internal/config"
+	dwngateway "github.com/brocaar/chirpstack-network-server/internal/downlink/gateway"
+	"github.com/brocaar/chirpstack-network-server/internal/helpers"
+	"github.com/brocaar/chirpstack-network-server/internal/logging"
+	"github.com/brocaar/chirpstack-network-server/internal/models"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
 	"github.com/brocaar/lorawan"
 )
 
 var (
-	rxWindow        int
-	downlinkTXPower int
+	rxWindow               int
+	downlinkTXPower        int
+	gatewayPreferMinMargin float64
 )
 
 var tasks = []func(*joinContext) error{
@@ -57,6 +57,7 @@ func Setup(conf config.Config) error {
 	nsConfig := conf.NetworkServer.NetworkSettings
 	rxWindow = nsConfig.RXWindow
 	downlinkTXPower = nsConfig.DownlinkTXPower
+	gatewayPreferMinMargin = nsConfig.GatewayPreferMinMargin
 
 	return nil
 }
@@ -116,7 +117,11 @@ func setTXInfo(ctx *joinContext) error {
 }
 
 func setTXInfoForRX1(ctx *joinContext) error {
-	rxInfo := ctx.DeviceGatewayRXInfo[0]
+	rxInfo, err := dwngateway.SelectDownlinkGateway(gatewayPreferMinMargin, ctx.RXPacket.DR, ctx.DeviceGatewayRXInfo)
+	if err != nil {
+		return err
+	}
+
 	txInfo := gw.DownlinkTXInfo{
 		GatewayId: rxInfo.GatewayID[:],
 		Board:     rxInfo.Board,
@@ -166,7 +171,11 @@ func setTXInfoForRX1(ctx *joinContext) error {
 }
 
 func setTXInfoForRX2(ctx *joinContext) error {
-	rxInfo := ctx.DeviceGatewayRXInfo[0]
+	rxInfo, err := dwngateway.SelectDownlinkGateway(gatewayPreferMinMargin, ctx.RXPacket.DR, ctx.DeviceGatewayRXInfo)
+	if err != nil {
+		return err
+	}
+
 	txInfo := gw.DownlinkTXInfo{
 		GatewayId: rxInfo.GatewayID[:],
 		Board:     rxInfo.Board,
@@ -176,7 +185,7 @@ func setTXInfoForRX2(ctx *joinContext) error {
 	}
 
 	// set data-rate
-	err := helpers.SetDownlinkTXInfoDataRate(&txInfo, band.Band().GetDefaults().RX2DataRate, band.Band())
+	err = helpers.SetDownlinkTXInfoDataRate(&txInfo, band.Band().GetDefaults().RX2DataRate, band.Band())
 	if err != nil {
 		return errors.Wrap(err, "set downlink tx-info data-rate error")
 	}
@@ -247,15 +256,6 @@ func sendJoinAcceptResponse(ctx *joinContext) error {
 		return errors.Wrap(err, "send downlink frame error")
 	}
 
-	// log frame
-	if err := framelog.LogDownlinkFrameForGateway(ctx.ctx, storage.RedisPool(), ctx.DownlinkFrames[0]); err != nil {
-		log.WithError(err).Error("log downlink frame for gateway error")
-	}
-
-	if err := framelog.LogDownlinkFrameForDevEUI(ctx.ctx, storage.RedisPool(), ctx.DeviceSession.DevEUI, ctx.DownlinkFrames[0]); err != nil {
-		log.WithError(err).Error("log downlink frame for device error")
-	}
-
 	return nil
 }
 
@@ -269,7 +269,7 @@ func saveFrames(ctx *joinContext) error {
 		df.DownlinkFrames = append(df.DownlinkFrames, &ctx.DownlinkFrames[i])
 	}
 
-	if err := storage.SaveDownlinkFrames(ctx.ctx, storage.RedisPool(), df); err != nil {
+	if err := storage.SaveDownlinkFrames(ctx.ctx, df); err != nil {
 		return errors.Wrap(err, "save downlink-frames error")
 	}
 

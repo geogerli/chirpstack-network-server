@@ -11,13 +11,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 
-	"github.com/brocaar/loraserver/api/ns"
-	"github.com/brocaar/loraserver/internal/band"
-	"github.com/brocaar/loraserver/internal/config"
-	"github.com/brocaar/loraserver/internal/downlink/data/classb"
-	"github.com/brocaar/loraserver/internal/gps"
-	"github.com/brocaar/loraserver/internal/storage"
-	"github.com/brocaar/loraserver/internal/test"
+	"github.com/brocaar/chirpstack-api/go/v3/ns"
+	"github.com/brocaar/chirpstack-network-server/internal/band"
+	"github.com/brocaar/chirpstack-network-server/internal/config"
+	"github.com/brocaar/chirpstack-network-server/internal/downlink/data/classb"
+	"github.com/brocaar/chirpstack-network-server/internal/gps"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
+	"github.com/brocaar/chirpstack-network-server/internal/test"
 	"github.com/brocaar/lorawan"
 	loraband "github.com/brocaar/lorawan/band"
 )
@@ -36,7 +36,7 @@ func (ts *NetworkServerAPITestSuite) SetupSuite() {
 }
 
 func (ts *NetworkServerAPITestSuite) SetupTest() {
-	test.MustFlushRedis(storage.RedisPool())
+	storage.RedisClient().FlushAll()
 }
 
 func (ts *NetworkServerAPITestSuite) TestMulticastGroup() {
@@ -177,7 +177,7 @@ func (ts *NetworkServerAPITestSuite) TestMulticastQueue() {
 	}
 	for i := range devices {
 		assert.NoError(storage.CreateDevice(context.Background(), storage.DB(), &devices[i]))
-		assert.NoError(storage.SaveDeviceGatewayRXInfoSet(context.Background(), storage.RedisPool(), storage.DeviceGatewayRXInfoSet{
+		assert.NoError(storage.SaveDeviceGatewayRXInfoSet(context.Background(), storage.DeviceGatewayRXInfoSet{
 			DevEUI: devices[i].DevEUI,
 			DR:     3,
 			Items: []storage.DeviceGatewayRXInfo{
@@ -513,6 +513,7 @@ func (ts *NetworkServerAPITestSuite) TestDevice() {
 					},
 				})
 				assert.Nil(err)
+
 			})
 
 			_, err = ts.api.ActivateDevice(context.Background(), &ns.ActivateDeviceRequest{
@@ -538,7 +539,7 @@ func (ts *NetworkServerAPITestSuite) TestDevice() {
 			})
 
 			t.Run("Device-session is created", func(t *testing.T) {
-				ds, err := storage.GetDeviceSession(context.Background(), storage.RedisPool(), devEUI)
+				ds, err := storage.GetDeviceSession(context.Background(), devEUI)
 				assert.NoError(err)
 				assert.Equal(storage.DeviceSession{
 					DeviceProfileID:  dp.ID,
@@ -566,6 +567,7 @@ func (ts *NetworkServerAPITestSuite) TestDevice() {
 					PingSlotFrequency:     868100000,
 					NbTrans:               1,
 					MACVersion:            "1.0.2",
+					MACCommandErrorCount:  make(map[lorawan.CID]int),
 				}, ds)
 			})
 
@@ -597,10 +599,10 @@ func (ts *NetworkServerAPITestSuite) TestDevice() {
 
 				t.Run("LoRaWAN 1.1", func(t *testing.T) {
 					assert := require.New(t)
-					ds, err := storage.GetDeviceSession(context.Background(), storage.RedisPool(), devEUI)
+					ds, err := storage.GetDeviceSession(context.Background(), devEUI)
 					assert.NoError(err)
 					ds.MACVersion = "1.1.0"
-					assert.NoError(storage.SaveDeviceSession(context.Background(), storage.RedisPool(), ds))
+					assert.NoError(storage.SaveDeviceSession(context.Background(), ds))
 
 					resp, err := ts.api.GetNextDownlinkFCntForDevEUI(context.Background(), &ns.GetNextDownlinkFCntForDevEUIRequest{DevEui: devEUI[:]})
 					assert.NoError(err)
@@ -628,9 +630,18 @@ func (ts *NetworkServerAPITestSuite) TestDevice() {
 			t.Run("DeactivateDevice", func(t *testing.T) {
 				assert := require.New(t)
 
-				items, err := storage.GetDeviceQueueItemsForDevEUI(context.Background(), storage.DB(), devEUI)
-				assert.NoError(err)
-				assert.Len(items, 1)
+				resp, err := ts.api.GetDeviceQueueItemsForDevEUI(context.Background(), &ns.GetDeviceQueueItemsForDevEUIRequest{
+					DevEui: devEUI[:],
+				})
+				assert.EqualValues(1, resp.TotalCount)
+				assert.Len(resp.Items, 1)
+
+				resp, err = ts.api.GetDeviceQueueItemsForDevEUI(context.Background(), &ns.GetDeviceQueueItemsForDevEUIRequest{
+					DevEui:    devEUI[:],
+					CountOnly: true,
+				})
+				assert.EqualValues(1, resp.TotalCount)
+				assert.Len(resp.Items, 0)
 
 				_, err = ts.api.DeactivateDevice(context.Background(), &ns.DeactivateDeviceRequest{
 					DevEui: devEUI[:],
@@ -640,7 +651,7 @@ func (ts *NetworkServerAPITestSuite) TestDevice() {
 				_, err = ts.api.GetDeviceActivation(context.Background(), &ns.GetDeviceActivationRequest{DevEui: devEUI[:]})
 				assert.Equal(codes.NotFound, grpc.Code(err))
 
-				items, err = storage.GetDeviceQueueItemsForDevEUI(context.Background(), storage.DB(), devEUI)
+				items, err := storage.GetDeviceQueueItemsForDevEUI(context.Background(), storage.DB(), devEUI)
 				assert.NoError(err)
 				assert.Len(items, 0)
 			})
@@ -667,7 +678,7 @@ func (ts *NetworkServerAPITestSuite) TestDevice() {
 				})
 				assert.NoError(err)
 
-				ds, err := storage.GetDeviceSession(context.Background(), storage.RedisPool(), devEUI)
+				ds, err := storage.GetDeviceSession(context.Background(), devEUI)
 				assert.NoError(err)
 				assert.True(ds.SkipFCntValidation)
 			})

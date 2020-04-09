@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/brocaar/loraserver/internal/storage"
-	"github.com/brocaar/loraserver/internal/test"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
+	"github.com/brocaar/chirpstack-network-server/internal/test"
 	"github.com/brocaar/lorawan"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -197,7 +197,7 @@ func TestADR(t *testing.T) {
 			if err := storage.Setup(conf); err != nil {
 				panic(err)
 			}
-			test.MustFlushRedis(storage.RedisPool())
+			storage.RedisClient().FlushAll()
 
 			Convey("Given a testtable for HandleADR", func() {
 				macBlock := storage.MACCommandBlock{

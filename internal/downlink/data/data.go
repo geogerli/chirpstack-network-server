@@ -10,20 +10,21 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/brocaar/loraserver/api/gw"
-	"github.com/brocaar/loraserver/internal/adr"
-	"github.com/brocaar/loraserver/internal/backend/gateway"
-	"github.com/brocaar/loraserver/internal/band"
-	"github.com/brocaar/loraserver/internal/channels"
-	"github.com/brocaar/loraserver/internal/config"
-	"github.com/brocaar/loraserver/internal/framelog"
-	"github.com/brocaar/loraserver/internal/helpers"
-	"github.com/brocaar/loraserver/internal/logging"
-	"github.com/brocaar/loraserver/internal/maccommand"
-	"github.com/brocaar/loraserver/internal/models"
-	"github.com/brocaar/loraserver/internal/storage"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-network-server/internal/adr"
+	"github.com/brocaar/chirpstack-network-server/internal/backend/gateway"
+	"github.com/brocaar/chirpstack-network-server/internal/band"
+	"github.com/brocaar/chirpstack-network-server/internal/channels"
+	"github.com/brocaar/chirpstack-network-server/internal/config"
+	dwngateway "github.com/brocaar/chirpstack-network-server/internal/downlink/gateway"
+	"github.com/brocaar/chirpstack-network-server/internal/helpers"
+	"github.com/brocaar/chirpstack-network-server/internal/logging"
+	"github.com/brocaar/chirpstack-network-server/internal/maccommand"
+	"github.com/brocaar/chirpstack-network-server/internal/models"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
 	"github.com/brocaar/lorawan"
 	loraband "github.com/brocaar/lorawan/band"
+	"github.com/brocaar/lorawan/sensitivity"
 )
 
 const defaultCodeRate = "4/5"
@@ -49,7 +50,9 @@ var (
 	classBPingSlotFrequency int
 
 	// RX window
-	rxWindow int
+	rxWindow              int
+	rx2PreferOnRX1DRLt    int
+	rx2PreferOnLinkBudget bool
 
 	// RX2 params
 	rx2Frequency int
@@ -75,6 +78,12 @@ var (
 	uplinkDwellTime400ms   bool
 	downlinkDwellTime400ms bool
 	uplinkMaxEIRPIndex     uint8
+
+	// Max mac-command error count.
+	maxMACCommandErrorCount int
+
+	// Prefer gateways with min uplink SNR margin
+	gatewayPreferMinMargin float64
 )
 
 var setMACCommandsSet = setMACCommands(
@@ -145,6 +154,9 @@ func Setup(conf config.Config) error {
 	rx1Delay = nsConf.RX1Delay
 	rxWindow = nsConf.RXWindow
 
+	rx2PreferOnRX1DRLt = nsConf.RX2PreferOnRX1DRLt
+	rx2PreferOnLinkBudget = nsConf.RX2PreferOnLinkBudget
+
 	downlinkTXPower = nsConf.DownlinkTXPower
 
 	disableMACCommands = nsConf.DisableMACCommands
@@ -160,6 +172,9 @@ func Setup(conf config.Config) error {
 		maxEIRP = band.Band().GetDefaultMaxUplinkEIRP()
 	}
 	uplinkMaxEIRPIndex = lorawan.GetTXParamSetupEIRPIndex(maxEIRP)
+
+	maxMACCommandErrorCount = conf.NetworkServer.NetworkSettings.MaxMACCommandErrorCount
+	gatewayPreferMinMargin = conf.NetworkServer.NetworkSettings.GatewayPreferMinMargin
 
 	return nil
 }
@@ -386,7 +401,7 @@ func setTXParameters(ctx *dataContext) error {
 	}
 
 	// Calculate the device max. EIRP.
-	// We take the smallest value (loraserver.toml vs device-profile) to avoid
+	// We take the smallest value (chirpstack-network-server.toml vs device-profile) to avoid
 	// that the device-profile sets a higher EIRP than that is allowed on the
 	// network.
 	deviceMaxEIRPIndex := uplinkMaxEIRPIndex
@@ -405,16 +420,119 @@ func setTXParameters(ctx *dataContext) error {
 	return nil
 }
 
+func preferRX2DR(ctx *dataContext) (bool, error) {
+	// The device has not yet been updated to the network-server RX2 parameters
+	// (using mac-commands). Do not prefer RX2 over RX1 in this case.
+	if ctx.DeviceSession.RX2Frequency != rx2Frequency || ctx.DeviceSession.RX2DR != uint8(rx2DR) ||
+		ctx.DeviceSession.RX1DROffset != uint8(rx1DROffset) || ctx.DeviceSession.RXDelay != uint8(rx1Delay) {
+		return false, nil
+	}
+
+	// get rx1 data-rate
+	drRX1Index, err := band.Band().GetRX1DataRateIndex(ctx.DeviceSession.DR, int(ctx.DeviceSession.RX1DROffset))
+	if err != nil {
+		return false, errors.Wrap(err, "get rx1 data-rate index error")
+	}
+
+	if drRX1Index < rx2PreferOnRX1DRLt {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func preferRX2LinkBudget(ctx *dataContext) (b bool, err error) {
+	// The device has not yet been updated to the network-server RX2 parameters
+	// (using mac-commands). Do not prefer RX2 over RX1 in this case.
+	if ctx.DeviceSession.RX2Frequency != rx2Frequency || ctx.DeviceSession.RX2DR != uint8(rx2DR) ||
+		ctx.DeviceSession.RX1DROffset != uint8(rx1DROffset) || ctx.DeviceSession.RXDelay != uint8(rx1Delay) {
+		return false, nil
+	}
+
+	// get rx1 data-rate
+	drRX1Index, err := band.Band().GetRX1DataRateIndex(ctx.DeviceSession.DR, int(ctx.DeviceSession.RX1DROffset))
+	if err != nil {
+		return false, errors.Wrap(err, "get rx1 data-rate index error")
+	}
+
+	// get rx1 data-rate
+	drRX1, err := band.Band().GetDataRate(drRX1Index)
+	if err != nil {
+		return false, errors.Wrap(err, "get data-rate error")
+	}
+
+	// get rx2 data-rate
+	drRX2, err := band.Band().GetDataRate(int(ctx.DeviceSession.RX2DR))
+	if err != nil {
+		return false, errors.Wrap(err, "get data-rate error")
+	}
+
+	// the calculation below only applies for LORA modulation
+	if drRX1.Modulation != loraband.LoRaModulation || drRX2.Modulation != loraband.LoRaModulation {
+		return false, nil
+	}
+
+	// get RX1 and RX2 freq
+	rx1Freq, err := band.Band().GetRX1FrequencyForUplinkFrequency(int(ctx.RXPacket.TXInfo.GetFrequency()))
+	if err != nil {
+		return false, errors.Wrap(err, "get rx1 frequency for uplink frequency error")
+	}
+	rx2Freq := rx2Frequency
+
+	// get RX1 and RX2 TX Power
+	var txPowerRX1, txPowerRX2 int
+	if downlinkTXPower != -1 {
+		txPowerRX1 = downlinkTXPower
+		txPowerRX2 = downlinkTXPower
+	} else {
+		txPowerRX1 = band.Band().GetDownlinkTXPower(rx1Freq)
+		txPowerRX2 = band.Band().GetDownlinkTXPower(rx2Freq)
+	}
+
+	linkBudgetRX1 := sensitivity.CalculateLinkBudget(drRX1.Bandwidth*1000, 6, float32(config.SpreadFactorToRequiredSNRTable[drRX1.SpreadFactor]), float32(txPowerRX1))
+	linkBudgetRX2 := sensitivity.CalculateLinkBudget(drRX2.Bandwidth*1000, 6, float32(config.SpreadFactorToRequiredSNRTable[drRX2.SpreadFactor]), float32(txPowerRX2))
+
+	return linkBudgetRX2 > linkBudgetRX1, nil
+}
+
 func setDataTXInfo(ctx *dataContext) error {
-	if rxWindow == 0 || rxWindow == 1 {
+	preferRX2overRX1, err := preferRX2DR(ctx)
+	if err != nil {
+		return err
+	}
+
+	if rx2PreferOnLinkBudget {
+		prefer, err := preferRX2LinkBudget(ctx)
+		if err != nil {
+			return err
+		}
+		preferRX2overRX1 = prefer || preferRX2overRX1
+	}
+
+	// RX2 is prefered and the RX window is set to automatic.
+	if preferRX2overRX1 && rxWindow == 0 {
+		// RX2
+		if err := setTXInfoForRX2(ctx); err != nil {
+			return err
+		}
+
+		// RX1
 		if err := setTXInfoForRX1(ctx); err != nil {
 			return err
 		}
-	}
+	} else {
+		// RX1
+		if rxWindow == 0 || rxWindow == 1 {
+			if err := setTXInfoForRX1(ctx); err != nil {
+				return err
+			}
+		}
 
-	if rxWindow == 0 || rxWindow == 2 {
-		if err := setTXInfoForRX2(ctx); err != nil {
-			return err
+		// RX2
+		if rxWindow == 0 || rxWindow == 2 {
+			if err := setTXInfoForRX2(ctx); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -422,7 +540,10 @@ func setDataTXInfo(ctx *dataContext) error {
 }
 
 func setTXInfoForRX1(ctx *dataContext) error {
-	rxInfo := ctx.DeviceGatewayRXInfo[0]
+	rxInfo, err := dwngateway.SelectDownlinkGateway(gatewayPreferMinMargin, ctx.DeviceSession.DR, ctx.DeviceGatewayRXInfo)
+	if err != nil {
+		return err
+	}
 
 	txInfo := gw.DownlinkTXInfo{
 		GatewayId: rxInfo.GatewayID[:],
@@ -431,13 +552,7 @@ func setTXInfoForRX1(ctx *dataContext) error {
 		Context:   rxInfo.Context,
 	}
 
-	// get rx1 data-rate
-	uplinkDR, err := helpers.GetDataRateIndex(true, ctx.RXPacket.TXInfo, band.Band())
-	if err != nil {
-		return errors.Wrap(err, "get data-rate index error")
-	}
-
-	rx1DR, err := band.Band().GetRX1DataRateIndex(uplinkDR, int(ctx.DeviceSession.RX1DROffset))
+	rx1DR, err := band.Band().GetRX1DataRateIndex(ctx.DeviceSession.DR, int(ctx.DeviceSession.RX1DROffset))
 	if err != nil {
 		return errors.Wrap(err, "get rx1 data-rate index error")
 	}
@@ -495,7 +610,10 @@ func setImmediately(ctx *dataContext) error {
 }
 
 func setTXInfoForRX2(ctx *dataContext) error {
-	rxInfo := ctx.DeviceGatewayRXInfo[0]
+	rxInfo, err := dwngateway.SelectDownlinkGateway(gatewayPreferMinMargin, ctx.DeviceSession.DR, ctx.DeviceGatewayRXInfo)
+	if err != nil {
+		return err
+	}
 
 	txInfo := gw.DownlinkTXInfo{
 		GatewayId: rxInfo.GatewayID[:],
@@ -506,7 +624,7 @@ func setTXInfoForRX2(ctx *dataContext) error {
 	}
 
 	// get data-rate
-	err := helpers.SetDownlinkTXInfoDataRate(&txInfo, int(ctx.DeviceSession.RX2DR), band.Band())
+	err = helpers.SetDownlinkTXInfoDataRate(&txInfo, int(ctx.DeviceSession.RX2DR), band.Band())
 	if err != nil {
 		return errors.Wrap(err, "set downlink tx-info data-rate error")
 	}
@@ -556,7 +674,10 @@ func setTXInfoForRX2(ctx *dataContext) error {
 }
 
 func setTXInfoForClassB(ctx *dataContext) error {
-	rxInfo := ctx.DeviceGatewayRXInfo[0]
+	rxInfo, err := dwngateway.SelectDownlinkGateway(gatewayPreferMinMargin, ctx.DeviceSession.DR, ctx.DeviceGatewayRXInfo)
+	if err != nil {
+		return err
+	}
 
 	txInfo := gw.DownlinkTXInfo{
 		GatewayId: rxInfo.GatewayID[:],
@@ -567,7 +688,7 @@ func setTXInfoForClassB(ctx *dataContext) error {
 	}
 
 	// get data-rate
-	err := helpers.SetDownlinkTXInfoDataRate(&txInfo, ctx.DeviceSession.PingSlotDR, band.Band())
+	err = helpers.SetDownlinkTXInfoDataRate(&txInfo, ctx.DeviceSession.PingSlotDR, band.Band())
 	if err != nil {
 		return errors.Wrap(err, "set downlink tx-info data-rate error")
 	}
@@ -723,7 +844,7 @@ func setMACCommands(funcs ...func(*dataContext) error) func(*dataContext) error 
 			}
 		}
 
-		// In case mac-commands are disabled in the LoRa Server configuration,
+		// In case mac-commands are disabled in the ChirpStack Network Server configuration,
 		// only allow external mac-commands (e.g. scheduled by an external
 		// controller).
 		if disableMACCommands {
@@ -736,6 +857,15 @@ func setMACCommands(funcs ...func(*dataContext) error) func(*dataContext) error 
 			}
 			ctx.MACCommands = externalMACCommands
 		}
+
+		// Filter out mac-commands that exceed the max. error count.
+		var filteredMACCommands []storage.MACCommandBlock
+		for i := range ctx.MACCommands {
+			if ctx.DeviceSession.MACCommandErrorCount[ctx.MACCommands[i].CID] <= maxMACCommandErrorCount {
+				filteredMACCommands = append(filteredMACCommands, ctx.MACCommands[i])
+			}
+		}
+		ctx.MACCommands = filteredMACCommands
 
 		ctx.MACCommands = filterIncompatibleMACCommands(ctx.MACCommands)
 
@@ -772,13 +902,13 @@ func setMACCommands(funcs ...func(*dataContext) error) func(*dataContext) error 
 
 		for _, block := range ctx.MACCommands {
 			// set mac-command pending
-			if err := storage.SetPendingMACCommand(ctx.ctx, storage.RedisPool(), ctx.DeviceSession.DevEUI, block); err != nil {
+			if err := storage.SetPendingMACCommand(ctx.ctx, ctx.DeviceSession.DevEUI, block); err != nil {
 				return errors.Wrap(err, "set mac-command pending error")
 			}
 
 			// delete from queue, if external
 			if block.External {
-				if err := storage.DeleteMACCommandQueueItem(ctx.ctx, storage.RedisPool(), ctx.DeviceSession.DevEUI, block); err != nil {
+				if err := storage.DeleteMACCommandQueueItem(ctx.ctx, ctx.DeviceSession.DevEUI, block); err != nil {
 					return errors.Wrap(err, "delete mac-command block from queue error")
 				}
 			}
@@ -854,7 +984,7 @@ func requestADRChange(ctx *dataContext) error {
 }
 
 func getMACCommandsFromQueue(ctx *dataContext) error {
-	blocks, err := storage.GetMACCommandQueueItems(ctx.ctx, storage.RedisPool(), ctx.DeviceSession.DevEUI)
+	blocks, err := storage.GetMACCommandQueueItems(ctx.ctx, ctx.DeviceSession.DevEUI)
 	if err != nil {
 		return errors.Wrap(err, "get mac-command queue items error")
 	}
@@ -1000,60 +1130,11 @@ func sendDownlinkFrame(ctx *dataContext) error {
 	// set last downlink tx timestamp
 	ctx.DeviceSession.LastDownlinkTX = time.Now()
 
-	// log for gateway (with encrypted mac-commands)
-	if err := framelog.LogDownlinkFrameForGateway(ctx.ctx, storage.RedisPool(), ctx.DownlinkFrames[0].DownlinkFrame); err != nil {
-		log.WithError(err).WithFields(log.Fields{
-			"ctx_id": ctx.ctx.Value(logging.ContextIDKey),
-		}).Error("log downlink frame for gateway error")
-	}
-
-	// log for device (with decrypted mac-commands)
-	if err := func() error {
-		var phy lorawan.PHYPayload
-		if err := phy.UnmarshalBinary(ctx.DownlinkFrames[0].DownlinkFrame.PhyPayload); err != nil {
-			return err
-		}
-
-		// decrypt FRMPayload mac-commands
-		if ctx.FPort == 0 {
-			if err := phy.DecryptFRMPayload(ctx.DeviceSession.NwkSEncKey); err != nil {
-				return errors.Wrap(err, "decrypt frmpayload error")
-			}
-		}
-
-		// decrypt FOpts mac-commands (LoRaWAN 1.1)
-		if ctx.DeviceSession.GetMACVersion() != lorawan.LoRaWAN1_0 {
-			if err := phy.DecryptFOpts(ctx.DeviceSession.NwkSEncKey); err != nil {
-				return errors.Wrap(err, "encrypt FOpts error")
-			}
-		}
-
-		phyB, err := phy.MarshalBinary()
-		if err != nil {
-			return err
-		}
-
-		// log frame
-		if err := framelog.LogDownlinkFrameForDevEUI(ctx.ctx, storage.RedisPool(), ctx.DeviceSession.DevEUI, gw.DownlinkFrame{
-			Token:      uint32(ctx.DownlinkFrames[0].DownlinkFrame.Token),
-			TxInfo:     ctx.DownlinkFrames[0].DownlinkFrame.TxInfo,
-			PhyPayload: phyB,
-		}); err != nil {
-			return err
-		}
-
-		return nil
-	}(); err != nil {
-		log.WithError(err).WithFields(log.Fields{
-			"ctx_id": ctx.ctx.Value(logging.ContextIDKey),
-		}).Error("log downlink frame for device error")
-	}
-
 	return nil
 }
 
 func saveDeviceSession(ctx *dataContext) error {
-	if err := storage.SaveDeviceSession(ctx.ctx, storage.RedisPool(), ctx.DeviceSession); err != nil {
+	if err := storage.SaveDeviceSession(ctx.ctx, ctx.DeviceSession); err != nil {
 		return errors.Wrap(err, "save device-session error")
 	}
 	return nil
@@ -1061,7 +1142,7 @@ func saveDeviceSession(ctx *dataContext) error {
 
 func getDeviceProfile(ctx *dataContext) error {
 	var err error
-	ctx.DeviceProfile, err = storage.GetAndCacheDeviceProfile(ctx.ctx, storage.DB(), storage.RedisPool(), ctx.DeviceSession.DeviceProfileID)
+	ctx.DeviceProfile, err = storage.GetAndCacheDeviceProfile(ctx.ctx, storage.DB(), ctx.DeviceSession.DeviceProfileID)
 	if err != nil {
 		return errors.Wrap(err, "get device-profile error")
 	}
@@ -1070,7 +1151,7 @@ func getDeviceProfile(ctx *dataContext) error {
 
 func getServiceProfile(ctx *dataContext) error {
 	var err error
-	ctx.ServiceProfile, err = storage.GetAndCacheServiceProfile(ctx.ctx, storage.DB(), storage.RedisPool(), ctx.DeviceSession.ServiceProfileID)
+	ctx.ServiceProfile, err = storage.GetAndCacheServiceProfile(ctx.ctx, storage.DB(), ctx.DeviceSession.ServiceProfileID)
 	if err != nil {
 		return errors.Wrap(err, "get service-profile error")
 	}
@@ -1090,9 +1171,10 @@ func setDeviceGatewayRXInfo(ctx *dataContext) error {
 				Context:   ctx.RXPacket.RXInfoSet[i].Context,
 			})
 		}
+
 	} else {
 		// Class-B or Class-C.
-		rxInfo, err := storage.GetDeviceGatewayRXInfoSet(ctx.ctx, storage.RedisPool(), ctx.DeviceSession.DevEUI)
+		rxInfo, err := storage.GetDeviceGatewayRXInfoSet(ctx.ctx, ctx.DeviceSession.DevEUI)
 		if err != nil {
 			return errors.Wrap(err, "get device gateway RXInfoSet error")
 		}
@@ -1124,8 +1206,21 @@ func checkLastDownlinkTimestamp(ctx *dataContext) error {
 }
 
 func saveFrames(ctx *dataContext) error {
+	var fCnt uint32
+	if ctx.DeviceSession.GetMACVersion() == lorawan.LoRaWAN1_0 || ctx.FPort == 0 {
+		fCnt = ctx.DeviceSession.NFCntDown
+		ctx.DeviceSession.NFCntDown++
+	} else {
+		fCnt = ctx.DeviceSession.AFCntDown
+		ctx.DeviceSession.AFCntDown++
+	}
+
 	df := storage.DownlinkFrames{
-		DevEui: ctx.DeviceSession.DevEUI[:],
+		DevEui:           ctx.DeviceSession.DevEUI[:],
+		RoutingProfileId: ctx.DeviceSession.RoutingProfileID.Bytes(),
+		FCnt:             fCnt,
+		EncryptedFopts:   ctx.DeviceSession.GetMACVersion() != lorawan.LoRaWAN1_0,
+		NwkSEncKey:       ctx.DeviceSession.NwkSEncKey[:],
 	}
 
 	for i := range ctx.DownlinkFrames {
@@ -1133,7 +1228,7 @@ func saveFrames(ctx *dataContext) error {
 		df.DownlinkFrames = append(df.DownlinkFrames, &ctx.DownlinkFrames[i].DownlinkFrame)
 	}
 
-	if err := storage.SaveDownlinkFrames(ctx.ctx, storage.RedisPool(), df); err != nil {
+	if err := storage.SaveDownlinkFrames(ctx.ctx, df); err != nil {
 		return errors.Wrap(err, "save downlink-frames error")
 	}
 

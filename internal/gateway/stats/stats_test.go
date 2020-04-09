@@ -10,13 +10,13 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/brocaar/loraserver/api/as"
-	"github.com/brocaar/loraserver/api/common"
-	"github.com/brocaar/loraserver/api/gw"
-	"github.com/brocaar/loraserver/internal/backend/applicationserver"
-	"github.com/brocaar/loraserver/internal/backend/gateway"
-	"github.com/brocaar/loraserver/internal/storage"
-	"github.com/brocaar/loraserver/internal/test"
+	"github.com/brocaar/chirpstack-api/go/v3/as"
+	"github.com/brocaar/chirpstack-api/go/v3/common"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-network-server/internal/backend/applicationserver"
+	"github.com/brocaar/chirpstack-network-server/internal/backend/gateway"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
+	"github.com/brocaar/chirpstack-network-server/internal/test"
 	"github.com/brocaar/lorawan"
 	"github.com/brocaar/lorawan/band"
 )
@@ -209,6 +209,9 @@ func (ts *GatewayStatsTestSuite) TestStats() {
 		RxPacketsReceivedOk: 9,
 		TxPacketsReceived:   13,
 		TxPacketsEmitted:    10,
+		MetaData: map[string]string{
+			"foo": "bar",
+		},
 	}
 	stats.Time, _ = ptypes.TimestampProto(now)
 	assert.NoError(Handle(context.Background(), stats))
@@ -223,6 +226,9 @@ func (ts *GatewayStatsTestSuite) TestStats() {
 		RxPacketsReceivedOk: stats.RxPacketsReceivedOk,
 		TxPacketsReceived:   stats.TxPacketsReceived,
 		TxPacketsEmitted:    stats.TxPacketsEmitted,
+		Metadata: map[string]string{
+			"foo": "bar",
+		},
 	}, asReq)
 }
 

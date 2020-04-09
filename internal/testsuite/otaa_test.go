@@ -11,14 +11,15 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/brocaar/loraserver/api/common"
-	"github.com/brocaar/loraserver/api/gw"
-	"github.com/brocaar/loraserver/api/nc"
-	"github.com/brocaar/loraserver/internal/band"
-	"github.com/brocaar/loraserver/internal/helpers"
-	"github.com/brocaar/loraserver/internal/storage"
-	"github.com/brocaar/loraserver/internal/test"
-	"github.com/brocaar/loraserver/internal/uplink"
+	"github.com/brocaar/chirpstack-api/go/v3/as"
+	"github.com/brocaar/chirpstack-api/go/v3/common"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-api/go/v3/nc"
+	"github.com/brocaar/chirpstack-network-server/internal/band"
+	"github.com/brocaar/chirpstack-network-server/internal/helpers"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
+	"github.com/brocaar/chirpstack-network-server/internal/test"
+	"github.com/brocaar/chirpstack-network-server/internal/uplink"
 	"github.com/brocaar/lorawan"
 	"github.com/brocaar/lorawan/backend"
 	loraband "github.com/brocaar/lorawan/band"
@@ -142,6 +143,13 @@ func (ts *OTAATestSuite) TestLW10() {
 			PHYPayload:                    jrPayload,
 			JoinServerJoinAnsPayloadError: errors.New("invalid deveui"),
 			ExpectedError:                 errors.New("join-request to join-server error: invalid deveui"),
+			Assert: []Assertion{
+				AssertASHandleErrorRequest(as.HandleErrorRequest{
+					DevEui: ts.Device.DevEUI[:],
+					Type:   as.ErrorType_OTAA,
+					Error:  "join-server returned error: invalid deveui",
+				}),
+			},
 		},
 		{
 			Name:       "device already activated with dev-nonce",
@@ -161,6 +169,13 @@ func (ts *OTAATestSuite) TestLW10() {
 				},
 			},
 			ExpectedError: errors.New("validate dev-nonce error: object already exists"),
+			Assert: []Assertion{
+				AssertASHandleErrorRequest(as.HandleErrorRequest{
+					DevEui: ts.Device.DevEUI[:],
+					Type:   as.ErrorType_OTAA,
+					Error:  "validate dev-nonce error",
+				}),
+			},
 		},
 		{
 			Name:       "join-request accepted (rx1 + rx2)",
@@ -250,7 +265,7 @@ func (ts *OTAATestSuite) TestLW10() {
 				AssertDownlinkFrameSaved(ts.Device.DevEUI, uuid.Nil, gw.DownlinkTXInfo{
 					GatewayId:  rxInfo.GatewayId,
 					Frequency:  869525000,
-					Power:      14,
+					Power:      27,
 					Modulation: common.Modulation_LORA,
 					ModulationInfo: &gw.DownlinkTXInfo_LoraModulationInfo{
 						LoraModulationInfo: &gw.LoRaModulationInfo{
@@ -287,6 +302,7 @@ func (ts *OTAATestSuite) TestLW10() {
 					RX2Frequency:          band.Band().GetDefaults().RX2Frequency,
 					NbTrans:               1,
 					ReferenceAltitude:     5.6,
+					MACCommandErrorCount:  make(map[lorawan.CID]int),
 				}),
 				AssertDeviceQueueItems([]storage.DeviceQueueItem{}),
 				AssertDeviceMode(storage.DeviceModeA),
@@ -406,7 +422,7 @@ func (ts *OTAATestSuite) TestLW10() {
 				AssertDownlinkFrameSaved(ts.Device.DevEUI, uuid.Nil, gw.DownlinkTXInfo{
 					GatewayId:  rxInfo.GatewayId,
 					Frequency:  869525000,
-					Power:      14,
+					Power:      27,
 					Modulation: common.Modulation_LORA,
 					ModulationInfo: &gw.DownlinkTXInfo_LoraModulationInfo{
 						LoraModulationInfo: &gw.LoRaModulationInfo{
@@ -441,6 +457,7 @@ func (ts *OTAATestSuite) TestLW10() {
 					SkipFCntValidation:    true,
 					NbTrans:               1,
 					ReferenceAltitude:     5.6,
+					MACCommandErrorCount:  make(map[lorawan.CID]int),
 				}),
 				AssertDeviceMode(storage.DeviceModeA),
 			},
@@ -715,7 +732,7 @@ func (ts *OTAATestSuite) TestLW11() {
 				AssertDownlinkFrameSaved(ts.Device.DevEUI, uuid.Nil, gw.DownlinkTXInfo{
 					GatewayId:  rxInfo.GatewayId,
 					Frequency:  869525000,
-					Power:      14,
+					Power:      27,
 					Modulation: common.Modulation_LORA,
 					ModulationInfo: &gw.DownlinkTXInfo_LoraModulationInfo{
 						LoraModulationInfo: &gw.LoRaModulationInfo{
@@ -752,6 +769,7 @@ func (ts *OTAATestSuite) TestLW11() {
 					RX2Frequency:          band.Band().GetDefaults().RX2Frequency,
 					NbTrans:               1,
 					ReferenceAltitude:     5.6,
+					MACCommandErrorCount:  make(map[lorawan.CID]int),
 				}),
 				AssertDeviceQueueItems([]storage.DeviceQueueItem{}),
 				AssertDeviceMode(storage.DeviceModeA),
@@ -762,7 +780,7 @@ func (ts *OTAATestSuite) TestLW11() {
 			BeforeFunc: func(*OTAATest) error {
 				conf := test.GetConfig()
 				conf.JoinServer.KEK.Set = []struct {
-					Label string
+					Label string `mapstructure:"label"`
 					KEK   string `mapstructure:"kek"`
 				}{
 					{
@@ -869,7 +887,7 @@ func (ts *OTAATestSuite) TestLW11() {
 				AssertDownlinkFrameSaved(ts.Device.DevEUI, uuid.Nil, gw.DownlinkTXInfo{
 					GatewayId:  rxInfo.GatewayId,
 					Frequency:  869525000,
-					Power:      14,
+					Power:      27,
 					Modulation: common.Modulation_LORA,
 					ModulationInfo: &gw.DownlinkTXInfo_LoraModulationInfo{
 						LoraModulationInfo: &gw.LoRaModulationInfo{
@@ -907,6 +925,7 @@ func (ts *OTAATestSuite) TestLW11() {
 					RX2Frequency:          band.Band().GetDefaults().RX2Frequency,
 					NbTrans:               1,
 					ReferenceAltitude:     5.6,
+					MACCommandErrorCount:  make(map[lorawan.CID]int),
 				}),
 				AssertDeviceQueueItems([]storage.DeviceQueueItem{}),
 				AssertDeviceMode(storage.DeviceModeA),

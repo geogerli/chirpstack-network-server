@@ -11,16 +11,16 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/brocaar/loraserver/api/as"
-	"github.com/brocaar/loraserver/api/common"
-	"github.com/brocaar/loraserver/api/gw"
-	"github.com/brocaar/loraserver/api/nc"
-	"github.com/brocaar/loraserver/internal/band"
-	"github.com/brocaar/loraserver/internal/downlink"
-	"github.com/brocaar/loraserver/internal/helpers"
-	"github.com/brocaar/loraserver/internal/storage"
-	"github.com/brocaar/loraserver/internal/test"
-	"github.com/brocaar/loraserver/internal/uplink"
+	"github.com/brocaar/chirpstack-api/go/v3/as"
+	"github.com/brocaar/chirpstack-api/go/v3/common"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-api/go/v3/nc"
+	"github.com/brocaar/chirpstack-network-server/internal/band"
+	"github.com/brocaar/chirpstack-network-server/internal/downlink"
+	"github.com/brocaar/chirpstack-network-server/internal/helpers"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
+	"github.com/brocaar/chirpstack-network-server/internal/test"
+	"github.com/brocaar/chirpstack-network-server/internal/uplink"
 	"github.com/brocaar/lorawan"
 )
 
@@ -101,7 +101,7 @@ func (ts *ClassATestSuite) TestLW10Errors() {
 
 	tests := []ClassATest{
 		{
-			Name:          "invalid frame-counter",
+			Name:          "invalid frame-counter (did not increment)",
 			DeviceSession: *ts.DeviceSession,
 			TXInfo:        ts.TXInfo,
 			RXInfo:        ts.RXInfo,
@@ -119,10 +119,78 @@ func (ts *ClassATestSuite) TestLW10Errors() {
 				},
 				MIC: lorawan.MIC{48, 94, 26, 239},
 			},
-			ExpectedError: errors.New("get device-session error: device-session does not exist or invalid fcnt or mic"),
+			ExpectedError: errors.New("get device-session error: frame-counter did not increment"),
 			Assert: []Assertion{
 				AssertFCntUp(8),
 				AssertNFCntDown(5),
+				AssertASHandleErrorRequest(as.HandleErrorRequest{
+					DevEui: ts.Device.DevEUI[:],
+					Type:   as.ErrorType_DATA_UP_FCNT_RETRANSMISSION,
+					Error:  "frame-counter did not increment",
+					FCnt:   7,
+				}),
+			},
+		},
+		{
+			Name:          "invalid frame-counter (reset)",
+			DeviceSession: *ts.DeviceSession,
+			TXInfo:        ts.TXInfo,
+			RXInfo:        ts.RXInfo,
+			PHYPayload: lorawan.PHYPayload{
+				MHDR: lorawan.MHDR{
+					MType: lorawan.UnconfirmedDataUp,
+					Major: lorawan.LoRaWANR1,
+				},
+				MACPayload: &lorawan.MACPayload{
+					FHDR: lorawan.FHDR{
+						DevAddr: ts.DeviceSession.DevAddr,
+						FCnt:    0,
+					},
+					FPort: &fPortOne,
+				},
+				MIC: lorawan.MIC{0x83, 0x24, 0x53, 0xa3},
+			},
+			ExpectedError: errors.New("get device-session error: frame-counter reset or rollover occured"),
+			Assert: []Assertion{
+				AssertFCntUp(8),
+				AssertNFCntDown(5),
+				AssertASHandleErrorRequest(as.HandleErrorRequest{
+					DevEui: ts.Device.DevEUI[:],
+					Type:   as.ErrorType_DATA_UP_FCNT_RESET,
+					Error:  "frame-counter reset or rollover occured",
+					FCnt:   0,
+				}),
+			},
+		},
+		{
+			Name:          "invalid MIC",
+			DeviceSession: *ts.DeviceSession,
+			TXInfo:        ts.TXInfo,
+			RXInfo:        ts.RXInfo,
+			PHYPayload: lorawan.PHYPayload{
+				MHDR: lorawan.MHDR{
+					MType: lorawan.UnconfirmedDataUp,
+					Major: lorawan.LoRaWANR1,
+				},
+				MACPayload: &lorawan.MACPayload{
+					FHDR: lorawan.FHDR{
+						DevAddr: ts.DeviceSession.DevAddr,
+						FCnt:    7,
+					},
+					FPort: &fPortOne,
+				},
+				MIC: lorawan.MIC{0x83, 0x24, 0x53, 0xa3},
+			},
+			ExpectedError: errors.New("get device-session error: invalid MIC"),
+			Assert: []Assertion{
+				AssertFCntUp(8),
+				AssertNFCntDown(5),
+				AssertASHandleErrorRequest(as.HandleErrorRequest{
+					DevEui: ts.Device.DevEUI[:],
+					Type:   as.ErrorType_DATA_UP_MIC,
+					Error:  "invalid MIC",
+					FCnt:   7,
+				}),
 			},
 		},
 	}
@@ -175,7 +243,7 @@ func (ts *ClassATestSuite) TestLW11Errors() {
 				},
 				MIC: lorawan.MIC{160, 195, 160, 195},
 			},
-			ExpectedError: errors.New("get device-session error: device-session does not exist or invalid fcnt or mic"),
+			ExpectedError: errors.New("get device-session error: invalid MIC"),
 		},
 		{
 			Name: "the data-rate is invalid (MIC)",
@@ -199,7 +267,7 @@ func (ts *ClassATestSuite) TestLW11Errors() {
 				},
 				MIC: lorawan.MIC{160, 195, 160, 195},
 			},
-			ExpectedError: errors.New("get device-session error: device-session does not exist or invalid fcnt or mic"),
+			ExpectedError: errors.New("get device-session error: invalid MIC"),
 		},
 	}
 
@@ -2580,6 +2648,7 @@ func (ts *ClassATestSuite) TestLW10ADR() {
 				AssertFCntUp(11),
 				AssertNFCntDown(6),
 				AssertEnabledUplinkChannels([]int{0, 1, 2, 3, 4, 5, 6, 7}),
+				AssertMACCommandErrorCount(lorawan.LinkADRAns, 1),
 				AssertDownlinkFrame(gw.DownlinkTXInfo{
 					GatewayId:  ts.RXInfo.GatewayId,
 					Frequency:  ts.TXInfo.Frequency,
@@ -3050,7 +3119,7 @@ func (ts *ClassATestSuite) TestLW11ReceiveWindowSelection() {
 				AssertDownlinkFrame(gw.DownlinkTXInfo{
 					GatewayId:  ts.Gateway.GatewayID[:],
 					Frequency:  869525000,
-					Power:      14,
+					Power:      27,
 					Modulation: common.Modulation_LORA,
 					ModulationInfo: &gw.DownlinkTXInfo_LoraModulationInfo{
 						LoraModulationInfo: &gw.LoRaModulationInfo{
@@ -3125,7 +3194,7 @@ func (ts *ClassATestSuite) TestLW11ReceiveWindowSelection() {
 				AssertDownlinkFrame(gw.DownlinkTXInfo{
 					GatewayId:  ts.Gateway.GatewayID[:],
 					Frequency:  869525000,
-					Power:      14,
+					Power:      27,
 					Modulation: common.Modulation_LORA,
 					ModulationInfo: &gw.DownlinkTXInfo_LoraModulationInfo{
 						LoraModulationInfo: &gw.LoRaModulationInfo{
@@ -3273,7 +3342,7 @@ func (ts *ClassATestSuite) TestLW11ReceiveWindowSelection() {
 				AssertDownlinkFrameSaved(ts.Device.DevEUI, uuid.Nil, gw.DownlinkTXInfo{
 					GatewayId:  ts.Gateway.GatewayID[:],
 					Frequency:  869525000,
-					Power:      14,
+					Power:      27,
 					Modulation: common.Modulation_LORA,
 					ModulationInfo: &gw.DownlinkTXInfo_LoraModulationInfo{
 						LoraModulationInfo: &gw.LoRaModulationInfo{
@@ -3551,7 +3620,7 @@ func (ts *ClassATestSuite) TestLW11ReceiveWindowSelection() {
 				AssertDownlinkFrameSaved(ts.Device.DevEUI, uuid.Nil, gw.DownlinkTXInfo{
 					GatewayId:  ts.Gateway.GatewayID[:],
 					Frequency:  869525000,
-					Power:      14,
+					Power:      27,
 					Modulation: common.Modulation_LORA,
 					ModulationInfo: &gw.DownlinkTXInfo_LoraModulationInfo{
 						LoraModulationInfo: &gw.LoRaModulationInfo{

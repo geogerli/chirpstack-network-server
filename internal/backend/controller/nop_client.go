@@ -3,7 +3,7 @@ package controller
 import (
 	"context"
 
-	"github.com/brocaar/loraserver/api/nc"
+	"github.com/brocaar/chirpstack-api/go/v3/nc"
 	"github.com/golang/protobuf/ptypes/empty"
 	"google.golang.org/grpc"
 )
@@ -30,5 +30,12 @@ func (n *NopNetworkControllerClient) HandleDownlinkMetaData(ctx context.Context,
 // enqueued throught the API or when the CID is >= 0x80 (proprietary
 // mac-command range).
 func (n *NopNetworkControllerClient) HandleUplinkMACCommand(ctx context.Context, in *nc.HandleUplinkMACCommandRequest, opts ...grpc.CallOption) (*empty.Empty, error) {
+	return &empty.Empty{}, nil
+}
+
+// HandleRejectedUplinkFrameSet handles a rejected uplink.
+// And uplink can be rejected in the case the device has not (yet) been
+// provisioned, because of invalid frame-counter, MIC, ...
+func (n *NopNetworkControllerClient) HandleRejectedUplinkFrameSet(ctx context.Context, in *nc.HandleRejectedUplinkFrameSetRequest, opts ...grpc.CallOption) (*empty.Empty, error) {
 	return &empty.Empty{}, nil
 }

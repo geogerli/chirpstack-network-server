@@ -7,8 +7,8 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/brocaar/loraserver/internal/logging"
-	"github.com/brocaar/loraserver/internal/storage"
+	"github.com/brocaar/chirpstack-network-server/internal/logging"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
 	"github.com/brocaar/lorawan"
 )
 
@@ -45,6 +45,9 @@ func handlePingSlotChannelAns(ctx context.Context, ds *storage.DeviceSession, bl
 	}
 
 	if !pl.ChannelFrequencyOK || !pl.DataRateOK {
+		// increase the error counter
+		ds.MACCommandErrorCount[lorawan.PingSlotChannelAns]++
+
 		log.WithFields(log.Fields{
 			"dev_eui":              ds.DevEUI,
 			"channel_frequency_ok": pl.ChannelFrequencyOK,
@@ -53,6 +56,9 @@ func handlePingSlotChannelAns(ctx context.Context, ds *storage.DeviceSession, bl
 		}).Warning("ping_slot_channel request not acknowledged")
 		return nil, nil
 	}
+
+	// reset the error counter
+	delete(ds.MACCommandErrorCount, lorawan.PingSlotChannelAns)
 
 	ds.PingSlotDR = int(req.DR)
 	ds.PingSlotFrequency = int(req.Frequency)

@@ -15,21 +15,19 @@ import (
 
 	paho "github.com/eclipse/paho.mqtt.golang"
 	"github.com/golang/protobuf/proto"
-	"github.com/gomodule/redigo/redis"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/brocaar/loraserver/api/gw"
-	"github.com/brocaar/loraserver/internal/backend/gateway"
-	"github.com/brocaar/loraserver/internal/backend/gateway/marshaler"
-	"github.com/brocaar/loraserver/internal/config"
-	"github.com/brocaar/loraserver/internal/helpers"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-network-server/internal/backend/gateway"
+	"github.com/brocaar/chirpstack-network-server/internal/backend/gateway/marshaler"
+	"github.com/brocaar/chirpstack-network-server/internal/config"
+	"github.com/brocaar/chirpstack-network-server/internal/helpers"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
 	"github.com/brocaar/lorawan"
 )
 
-const uplinkLockTTL = time.Millisecond * 500
-const statsLockTTL = time.Millisecond * 500
-const ackLockTTL = time.Millisecond * 500
+const deduplicationLockTTL = time.Millisecond * 500
 const (
 	marshalerV2JSON = iota
 	marshalerProtobuf
@@ -47,7 +45,6 @@ type Backend struct {
 	downlinkTXAckChan chan gw.DownlinkTXAck
 
 	conn                 paho.Client
-	redisPool            *redis.Pool
 	eventTopic           string
 	commandTopicTemplate *template.Template
 	qos                  uint8
@@ -56,7 +53,7 @@ type Backend struct {
 }
 
 // NewBackend creates a new Backend.
-func NewBackend(redisPool *redis.Pool, c config.Config) (gateway.Gateway, error) {
+func NewBackend(c config.Config) (gateway.Gateway, error) {
 	conf := c.NetworkServer.Gateway.Backend.MQTT
 	var err error
 
@@ -65,7 +62,6 @@ func NewBackend(redisPool *redis.Pool, c config.Config) (gateway.Gateway, error)
 		statsPacketChan:   make(chan gw.GatewayStats),
 		downlinkTXAckChan: make(chan gw.DownlinkTXAck),
 		gatewayMarshaler:  make(map[lorawan.EUI64]marshaler.Type),
-		redisPool:         redisPool,
 		eventTopic:        conf.EventTopic,
 		qos:               conf.QOS,
 	}
@@ -83,6 +79,7 @@ func NewBackend(redisPool *redis.Pool, c config.Config) (gateway.Gateway, error)
 	opts.SetClientID(conf.ClientID)
 	opts.SetOnConnectHandler(b.onConnected)
 	opts.SetConnectionLostHandler(b.onConnectionLost)
+	opts.SetMaxReconnectInterval(conf.MaxReconnectInterval)
 
 	tlsconfig, err := newTLSConfig(conf.CACert, conf.TLSCert, conf.TLSKey)
 	if err != nil {
@@ -253,21 +250,14 @@ func (b *Backend) rxPacketHandler(c paho.Client, msg paho.Message) {
 	// Since with MQTT all subscribers will receive the uplink messages sent
 	// by all the gateways, the first instance receiving the message must lock it,
 	// so that other instances can ignore the same message (from the same gw).
-	// As an unique id, the gw mac + hex encoded payload is used. This is because
-	// we can't trust any of the data, as the MIC hasn't been validated yet.
-	key := fmt.Sprintf("lora:ns:uplink:lock:%s:%d:%s", gatewayID, uplinkFrame.TxInfo.Frequency, hex.EncodeToString(uplinkFrame.PhyPayload))
-	redisConn := b.redisPool.Get()
-	defer redisConn.Close()
-
-	_, err = redis.String(redisConn.Do("SET", key, "lock", "PX", int64(uplinkLockTTL/time.Millisecond), "NX"))
-	if err != nil {
-		if err == redis.ErrNil {
-			// the payload is already being processed by an other instance
-			return
+	key := fmt.Sprintf("lora:ns:uplink:lock:%s:%d:%d:%d:%s", gatewayID, uplinkFrame.TxInfo.Frequency, uplinkFrame.RxInfo.Board, uplinkFrame.RxInfo.Antenna, hex.EncodeToString(uplinkFrame.PhyPayload))
+	if locked, err := b.isLocked(key); err != nil || locked {
+		if err != nil {
+			log.WithError(err).WithFields(log.Fields{
+				"uplink_id": uplinkID,
+				"key":       key,
+			}).Error("gateway/mqtt: acquire lock error")
 		}
-		log.WithFields(log.Fields{
-			"uplink_id": uplinkID,
-		}).WithError(err).Error("gateway/mqtt: acquire uplink payload lock error")
 		return
 	}
 
@@ -296,16 +286,14 @@ func (b *Backend) statsPacketHandler(c paho.Client, msg paho.Message) {
 	// so that other instances can ignore the same message (from the same gw).
 	// As an unique id, the gw mac is used.
 	key := fmt.Sprintf("lora:ns:stats:lock:%s", gatewayID)
-	redisConn := b.redisPool.Get()
-	defer redisConn.Close()
-
-	_, err = redis.String(redisConn.Do("SET", key, "lock", "PX", int64(statsLockTTL/time.Millisecond), "NX"))
-	if err != nil {
-		if err == redis.ErrNil {
-			// the payload is already being processed by an other instance
-			return
+	if locked, err := b.isLocked(key); err != nil || locked {
+		if err != nil {
+			log.WithError(err).WithFields(log.Fields{
+				"key":      key,
+				"stats_id": statsID,
+			}).Error("gateway/mqtt: acquire lock error")
 		}
-		log.Errorf("gateway/mqtt: acquire stats lock error: %s", err)
+
 		return
 	}
 
@@ -337,16 +325,14 @@ func (b *Backend) ackPacketHandler(c paho.Client, msg paho.Message) {
 	// so that other instances can ignore the same message (from the same gw).
 	// As an unique id, the gw mac is used.
 	key := fmt.Sprintf("lora:ns:ack:lock:%s", gatewayID)
-	redisConn := b.redisPool.Get()
-	defer redisConn.Close()
-
-	_, err = redis.String(redisConn.Do("SET", key, "lock", "PX", int64(ackLockTTL/time.Millisecond), "NX"))
-	if err != nil {
-		if err == redis.ErrNil {
-			// the payload is already being processed by an other instance
-			return
+	if locked, err := b.isLocked(key); err != nil || locked {
+		if err != nil {
+			log.WithError(err).WithFields(log.Fields{
+				"key":         key,
+				"downlink_id": downlinkID,
+			}).Error("gateway/mqtt: acquire lock error")
 		}
-		log.Errorf("backend/gateway: acquire ack lock error: %s", err)
+
 		return
 	}
 
@@ -396,6 +382,19 @@ func (b *Backend) getGatewayMarshaler(gatewayID lorawan.EUI64) marshaler.Type {
 	defer b.RUnlock()
 
 	return b.gatewayMarshaler[gatewayID]
+}
+
+// isLocked returns if a lock exists for the given key, if false a lock is
+// acquired.
+func (b *Backend) isLocked(key string) (bool, error) {
+	set, err := storage.RedisClient().SetNX(key, "lock", deduplicationLockTTL).Result()
+	if err != nil {
+		return false, errors.Wrap(err, "acquire lock error")
+	}
+
+	// Set is true when we were able to set the lock, we return true if it
+	// was already locked.
+	return !set, nil
 }
 
 func newTLSConfig(cafile, certFile, certKeyFile string) (*tls.Config, error) {

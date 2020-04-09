@@ -9,14 +9,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/brocaar/loraserver/api/gw"
-	"github.com/brocaar/loraserver/internal/band"
-	"github.com/brocaar/loraserver/internal/downlink"
-	"github.com/brocaar/loraserver/internal/gps"
-	"github.com/brocaar/loraserver/internal/helpers"
-	"github.com/brocaar/loraserver/internal/storage"
-	"github.com/brocaar/loraserver/internal/test"
-	"github.com/brocaar/loraserver/internal/uplink"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-network-server/internal/band"
+	"github.com/brocaar/chirpstack-network-server/internal/downlink"
+	"github.com/brocaar/chirpstack-network-server/internal/gps"
+	"github.com/brocaar/chirpstack-network-server/internal/helpers"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
+	"github.com/brocaar/chirpstack-network-server/internal/test"
+	"github.com/brocaar/chirpstack-network-server/internal/uplink"
 	"github.com/brocaar/lorawan"
 )
 
@@ -186,7 +186,7 @@ func (ts *ClassBTestSuite) TestUplink() {
 			}
 
 			// create device-session
-			assert.NoError(storage.SaveDeviceSession(context.Background(), storage.RedisPool(), test.DeviceSession))
+			assert.NoError(storage.SaveDeviceSession(context.Background(), test.DeviceSession))
 
 			// set MIC
 			assert.NoError(test.PHYPayload.SetUplinkDataMIC(lorawan.LoRaWAN1_0, 0, 0, 0, test.DeviceSession.FNwkSIntKey, test.DeviceSession.SNwkSIntKey))
@@ -201,7 +201,7 @@ func (ts *ClassBTestSuite) TestUplink() {
 			}
 			assert.NoError(uplink.HandleUplinkFrame(context.Background(), uplinkFrame))
 
-			ds, err := storage.GetDeviceSession(context.Background(), storage.RedisPool(), test.DeviceSession.DevEUI)
+			ds, err := storage.GetDeviceSession(context.Background(), test.DeviceSession.DevEUI)
 			assert.NoError(err)
 
 			d, err := storage.GetDevice(context.Background(), storage.DB(), test.DeviceSession.DevEUI)
@@ -278,7 +278,7 @@ func (ts *ClassBTestSuite) TestDownlink() {
 			},
 		},
 	}
-	assert.NoError(storage.SaveDeviceGatewayRXInfoSet(context.Background(), storage.RedisPool(), deviceGatewayRXInfoSet))
+	assert.NoError(storage.SaveDeviceGatewayRXInfoSet(context.Background(), deviceGatewayRXInfoSet))
 
 	txInfoDefaultFreq := txInfo
 	txInfoDefaultFreq.Frequency = 869525000

@@ -7,13 +7,13 @@ import (
 	"github.com/gofrs/uuid"
 	"github.com/pkg/errors"
 
-	"github.com/brocaar/loraserver/api/common"
-	"github.com/brocaar/loraserver/api/gw"
-	"github.com/brocaar/loraserver/internal/backend/gateway"
-	"github.com/brocaar/loraserver/internal/band"
-	"github.com/brocaar/loraserver/internal/config"
-	"github.com/brocaar/loraserver/internal/helpers"
-	"github.com/brocaar/loraserver/internal/storage"
+	"github.com/brocaar/chirpstack-api/go/v3/common"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-network-server/internal/backend/gateway"
+	"github.com/brocaar/chirpstack-network-server/internal/band"
+	"github.com/brocaar/chirpstack-network-server/internal/config"
+	"github.com/brocaar/chirpstack-network-server/internal/helpers"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
 	"github.com/brocaar/lorawan"
 )
 
@@ -139,7 +139,7 @@ func sendProprietaryDown(ctx *proprietaryContext) error {
 
 func saveFrame(ctx *proprietaryContext) error {
 	for _, df := range ctx.DownlinkFrames {
-		if err := storage.SaveDownlinkFrames(ctx.ctx, storage.RedisPool(), storage.DownlinkFrames{
+		if err := storage.SaveDownlinkFrames(ctx.ctx, storage.DownlinkFrames{
 			Token:          df.Token,
 			DownlinkFrames: []*gw.DownlinkFrame{&df},
 		}); err != nil {

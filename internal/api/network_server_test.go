@@ -8,20 +8,19 @@ import (
 
 	"github.com/gofrs/uuid"
 	"github.com/golang/protobuf/proto"
-	"github.com/golang/protobuf/ptypes"
 	"github.com/golang/protobuf/ptypes/empty"
 	. "github.com/smartystreets/goconvey/convey"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 
-	"github.com/brocaar/loraserver/api/common"
-	"github.com/brocaar/loraserver/api/gw"
-	"github.com/brocaar/loraserver/api/ns"
-	"github.com/brocaar/loraserver/internal/config"
-	"github.com/brocaar/loraserver/internal/framelog"
-	"github.com/brocaar/loraserver/internal/gps"
-	"github.com/brocaar/loraserver/internal/storage"
-	"github.com/brocaar/loraserver/internal/test"
+	"github.com/brocaar/chirpstack-api/go/v3/common"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-api/go/v3/ns"
+	"github.com/brocaar/chirpstack-network-server/internal/config"
+	"github.com/brocaar/chirpstack-network-server/internal/framelog"
+	"github.com/brocaar/chirpstack-network-server/internal/gps"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
+	"github.com/brocaar/chirpstack-network-server/internal/test"
 	"github.com/brocaar/lorawan"
 )
 
@@ -32,12 +31,9 @@ func TestNetworkServerAPI(t *testing.T) {
 	}
 	config.C.NetworkServer.NetID = [3]byte{1, 2, 3}
 
-	storage.SetAggregationIntervals([]storage.AggregationInterval{storage.AggregationMinute})
-	storage.SetMetricsTTL(time.Minute, time.Minute, time.Minute, time.Minute)
-
 	Convey("Given a clean PostgreSQL and Redis database + api instance", t, func() {
 		test.MustResetDB(storage.DB().DB)
-		test.MustFlushRedis(storage.RedisPool())
+		storage.RedisClient().FlushAll()
 
 		grpcServer := grpc.NewServer()
 		apiServer := NewNetworkServerAPI()
@@ -88,7 +84,7 @@ func TestNetworkServerAPI(t *testing.T) {
 			}()
 
 			Convey("When logging a downlink gateway frame", func() {
-				So(framelog.LogDownlinkFrameForGateway(context.Background(), storage.RedisPool(), gw.DownlinkFrame{
+				So(framelog.LogDownlinkFrameForGateway(context.Background(), gw.DownlinkFrame{
 					TxInfo: &gw.DownlinkTXInfo{
 						GatewayId: mac[:],
 					},
@@ -102,7 +98,7 @@ func TestNetworkServerAPI(t *testing.T) {
 			})
 
 			Convey("When logging an uplink gateway frame", func() {
-				So(framelog.LogUplinkFrameForGateways(context.Background(), storage.RedisPool(), gw.UplinkFrameSet{
+				So(framelog.LogUplinkFrameForGateways(context.Background(), gw.UplinkFrameSet{
 					RxInfo: []*gw.UplinkRXInfo{
 						{
 							GatewayId: mac[:],
@@ -140,7 +136,7 @@ func TestNetworkServerAPI(t *testing.T) {
 			}()
 
 			Convey("When logging a downlink device frame", func() {
-				So(framelog.LogDownlinkFrameForDevEUI(context.Background(), storage.RedisPool(), devEUI, gw.DownlinkFrame{}), ShouldBeNil)
+				So(framelog.LogDownlinkFrameForDevEUI(context.Background(), devEUI, gw.DownlinkFrame{}), ShouldBeNil)
 
 				Convey("Then the frame-log was received by the client", func() {
 					resp := <-respChan
@@ -150,7 +146,7 @@ func TestNetworkServerAPI(t *testing.T) {
 			})
 
 			Convey("When logging an uplink device frame", func() {
-				So(framelog.LogUplinkFrameForDevEUI(context.Background(), storage.RedisPool(), devEUI, gw.UplinkFrameSet{}), ShouldBeNil)
+				So(framelog.LogUplinkFrameForDevEUI(context.Background(), devEUI, gw.UplinkFrameSet{}), ShouldBeNil)
 
 				Convey("Then the frame-log was received by the client", func() {
 					resp := <-respChan
@@ -449,7 +445,7 @@ func TestNetworkServerAPI(t *testing.T) {
 			ds := storage.DeviceSession{
 				DevEUI: d.DevEUI,
 			}
-			So(storage.SaveDeviceSession(context.Background(), storage.RedisPool(), ds), ShouldBeNil)
+			So(storage.SaveDeviceSession(context.Background(), ds), ShouldBeNil)
 
 			Convey("Given an item in the device-queue", func() {
 				_, err := api.CreateDeviceQueueItem(ctx, &ns.CreateDeviceQueueItemRequest{
@@ -482,7 +478,7 @@ func TestNetworkServerAPI(t *testing.T) {
 					So(err, ShouldBeNil)
 
 					Convey("Then SkipFCntCheck has been enabled in the activation", func() {
-						ds, err := storage.GetDeviceSession(context.Background(), storage.RedisPool(), devEUI)
+						ds, err := storage.GetDeviceSession(context.Background(), devEUI)
 						So(err, ShouldBeNil)
 						So(ds.SkipFCntValidation, ShouldBeTrue)
 					})
@@ -522,7 +518,7 @@ func TestNetworkServerAPI(t *testing.T) {
 						So(err, ShouldBeNil)
 
 						Convey("Then the mac-command has been added to the queue", func() {
-							queue, err := storage.GetMACCommandQueueItems(context.Background(), storage.RedisPool(), devEUI)
+							queue, err := storage.GetMACCommandQueueItems(context.Background(), devEUI)
 							So(err, ShouldBeNil)
 							So(queue, ShouldResemble, []storage.MACCommandBlock{
 								{
@@ -546,7 +542,7 @@ func TestNetworkServerAPI(t *testing.T) {
 					BeaconLocked: true,
 					PingSlotNb:   1,
 				}
-				So(storage.SaveDeviceSession(context.Background(), storage.RedisPool(), ds), ShouldBeNil)
+				So(storage.SaveDeviceSession(context.Background(), ds), ShouldBeNil)
 
 				Convey("When calling CreateDeviceQueueItem", func() {
 					_, err := api.CreateDeviceQueueItem(ctx, &ns.CreateDeviceQueueItemRequest{
@@ -735,40 +731,6 @@ func TestNetworkServerAPI(t *testing.T) {
 					Id: []byte{1, 2, 3, 4, 5, 6, 7, 8},
 				})
 				So(err, ShouldResemble, grpc.Errorf(codes.NotFound, "object does not exist"))
-			})
-
-			Convey("Given some stats for this gateway", func() {
-				now := time.Now().UTC()
-				metrics := storage.MetricsRecord{
-					Time: now,
-					Metrics: map[string]float64{
-						"rx_count":    10,
-						"rx_ok_count": 5,
-						"tx_count":    11,
-						"tx_ok_count": 10,
-					},
-				}
-				So(storage.SaveMetricsForInterval(context.Background(), storage.RedisPool(), storage.AggregationMinute, "gw:0102030405060708", metrics), ShouldBeNil)
-
-				Convey("Then GetGatewayStats returns these stats", func() {
-					start, _ := ptypes.TimestampProto(now.Truncate(time.Minute))
-					end, _ := ptypes.TimestampProto(now)
-					nowTrunc, _ := ptypes.TimestampProto(now.Truncate(time.Minute))
-
-					resp, err := api.GetGatewayStats(ctx, &ns.GetGatewayStatsRequest{
-						GatewayId:      []byte{1, 2, 3, 4, 5, 6, 7, 8},
-						Interval:       ns.AggregationInterval_MINUTE,
-						StartTimestamp: start,
-						EndTimestamp:   end,
-					})
-					So(err, ShouldBeNil)
-					So(resp.Result, ShouldHaveLength, 1)
-					So(resp.Result[0].Timestamp, ShouldResemble, nowTrunc)
-					So(resp.Result[0].RxPacketsReceived, ShouldEqual, 10)
-					So(resp.Result[0].RxPacketsReceivedOk, ShouldEqual, 5)
-					So(resp.Result[0].TxPacketsReceived, ShouldEqual, 11)
-					So(resp.Result[0].TxPacketsEmitted, ShouldEqual, 10)
-				})
 			})
 
 			Convey("When creating a gateway-profile object", func() {

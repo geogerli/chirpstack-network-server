@@ -7,7 +7,7 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/brocaar/loraserver/internal/storage"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
 	"github.com/brocaar/lorawan"
 )
 
@@ -26,7 +26,7 @@ func FlushGatewayCache(db sqlx.Ext) error {
 	}
 
 	for _, id := range ids {
-		if err := storage.FlushGatewayCache(context.Background(), storage.RedisPool(), id); err != nil {
+		if err := storage.FlushGatewayCache(context.Background(), id); err != nil {
 			log.WithError(err).Error("flush gateway cache error")
 		}
 	}

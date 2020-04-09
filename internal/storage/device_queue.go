@@ -9,10 +9,10 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/brocaar/loraserver/api/as"
-	"github.com/brocaar/loraserver/internal/backend/applicationserver"
-	"github.com/brocaar/loraserver/internal/gps"
-	"github.com/brocaar/loraserver/internal/logging"
+	"github.com/brocaar/chirpstack-api/go/v3/as"
+	"github.com/brocaar/chirpstack-network-server/internal/backend/applicationserver"
+	"github.com/brocaar/chirpstack-network-server/internal/gps"
+	"github.com/brocaar/chirpstack-network-server/internal/logging"
 	"github.com/brocaar/lorawan"
 )
 
@@ -267,6 +267,25 @@ func GetDeviceQueueItemsForDevEUI(ctx context.Context, db sqlx.Queryer, devEUI l
 	}
 
 	return items, nil
+}
+
+// GetDeviceQueueItemCountForDevEUI returns the device-queue item count for
+// the given DevEUI.
+func GetDeviceQueueItemCountForDevEUI(ctx context.Context, db sqlx.Queryer, devEUI lorawan.EUI64) (int, error) {
+	var count int
+	err := sqlx.Get(db, &count, `
+		select
+			count(*)
+		from
+			device_queue
+		where
+			dev_eui = $1
+	`, devEUI)
+	if err != nil {
+		return 0, handlePSQLError(err, "select error")
+	}
+
+	return count, nil
 }
 
 // GetNextDeviceQueueItemForDevEUIMaxPayloadSizeAndFCnt returns the next

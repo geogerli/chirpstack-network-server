@@ -9,15 +9,15 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/brocaar/loraserver/api/common"
-	"github.com/brocaar/loraserver/api/gw"
-	"github.com/brocaar/loraserver/api/nc"
-	"github.com/brocaar/loraserver/internal/band"
-	"github.com/brocaar/loraserver/internal/downlink"
-	"github.com/brocaar/loraserver/internal/helpers"
-	"github.com/brocaar/loraserver/internal/storage"
-	"github.com/brocaar/loraserver/internal/test"
-	"github.com/brocaar/loraserver/internal/uplink"
+	"github.com/brocaar/chirpstack-api/go/v3/common"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-api/go/v3/nc"
+	"github.com/brocaar/chirpstack-network-server/internal/band"
+	"github.com/brocaar/chirpstack-network-server/internal/downlink"
+	"github.com/brocaar/chirpstack-network-server/internal/helpers"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
+	"github.com/brocaar/chirpstack-network-server/internal/test"
+	"github.com/brocaar/chirpstack-network-server/internal/uplink"
 	"github.com/brocaar/lorawan"
 	"github.com/brocaar/lorawan/backend"
 	loraband "github.com/brocaar/lorawan/band"
@@ -85,7 +85,7 @@ func (ts *RejoinTestSuite) SetupTest() {
 	conf.NetworkServer.NetworkSettings.RX1DROffset = 2
 	conf.NetworkServer.NetworkSettings.RX1Delay = 1
 	conf.JoinServer.KEK.Set = []struct {
-		Label string
+		Label string `mapstructure:"label"`
 		KEK   string `mapstructure:"kek"`
 	}{
 		{
@@ -250,7 +250,9 @@ func (ts *RejoinTestSuite) TestRejoinType0() {
 						RXDelay:               1,
 						RX1DROffset:           2,
 						RX2DR:                 3,
+						MACCommandErrorCount:  make(map[lorawan.CID]int),
 					},
+					MACCommandErrorCount: make(map[lorawan.CID]int),
 				}),
 				AssertNCHandleUplinkMetaDataRequest(nc.HandleUplinkMetaDataRequest{
 					DevEui:              ts.Device.DevEUI[:],
@@ -368,7 +370,9 @@ func (ts *RejoinTestSuite) TestRejoinType0() {
 						RXDelay:               1,
 						RX1DROffset:           2,
 						RX2DR:                 3,
+						MACCommandErrorCount:  make(map[lorawan.CID]int),
 					},
+					MACCommandErrorCount: make(map[lorawan.CID]int),
 				}),
 			},
 		},
@@ -540,7 +544,9 @@ func (ts *RejoinTestSuite) TestRejoinType2() {
 						RX2Frequency:          869525000,
 						NbTrans:               1,
 						EnabledUplinkChannels: []int{0, 1, 2},
+						MACCommandErrorCount:  make(map[lorawan.CID]int),
 					},
+					MACCommandErrorCount: make(map[lorawan.CID]int),
 				}),
 			},
 		},
@@ -643,7 +649,9 @@ func (ts *RejoinTestSuite) TestRejoinType2() {
 						NbTrans:               1,
 						EnabledUplinkChannels: []int{0, 1, 2},
 						ExtraUplinkChannels:   make(map[int]loraband.Channel),
+						MACCommandErrorCount:  make(map[lorawan.CID]int),
 					},
+					MACCommandErrorCount: make(map[lorawan.CID]int),
 				}),
 			},
 		},

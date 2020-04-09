@@ -9,10 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/brocaar/loraserver/api/common"
-	"github.com/brocaar/loraserver/api/gw"
-	"github.com/brocaar/loraserver/internal/storage"
-	"github.com/brocaar/loraserver/internal/uplink"
+	"github.com/brocaar/chirpstack-api/go/v3/common"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
+	"github.com/brocaar/chirpstack-network-server/internal/uplink"
 	"github.com/brocaar/lorawan"
 )
 
@@ -119,7 +119,7 @@ func (ts *AddGatewayMetaDataTestSuite) TestAddGatewayMetaData() {
 		// flush clients and reload device-session as the frame-counter
 		// increments on every test
 		ts.FlushClients()
-		ds, err := storage.GetDeviceSession(context.Background(), storage.RedisPool(), ts.DeviceSession.DevEUI)
+		ds, err := storage.GetDeviceSession(context.Background(), ts.DeviceSession.DevEUI)
 		assert.NoError(err)
 		ts.DeviceSession = &ds
 
@@ -159,7 +159,7 @@ func (ts *AddGatewayMetaDataTestSuite) TestAddGatewayMetaData() {
 			ts.Gateway.Location = test.Location
 			ts.Gateway.Altitude = test.Altitude
 			assert.NoError(storage.UpdateGateway(context.Background(), storage.DB(), ts.Gateway))
-			assert.NoError(storage.FlushGatewayCache(context.Background(), storage.RedisPool(), ts.Gateway.GatewayID))
+			assert.NoError(storage.FlushGatewayCache(context.Background(), ts.Gateway.GatewayID))
 
 			assert.Nil(uplink.HandleUplinkFrame(context.Background(), ts.GetUplinkFrameForFRMPayload(rxInfo, txInfo, lorawan.UnconfirmedDataUp, 10, []byte{1, 2, 3, 4})))
 

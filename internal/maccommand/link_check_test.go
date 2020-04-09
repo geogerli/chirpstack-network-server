@@ -7,11 +7,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/brocaar/loraserver/api/gw"
-	"github.com/brocaar/loraserver/internal/band"
-	"github.com/brocaar/loraserver/internal/helpers"
-	"github.com/brocaar/loraserver/internal/models"
-	"github.com/brocaar/loraserver/internal/storage"
+	"github.com/brocaar/chirpstack-api/go/v3/gw"
+	"github.com/brocaar/chirpstack-network-server/internal/band"
+	"github.com/brocaar/chirpstack-network-server/internal/helpers"
+	"github.com/brocaar/chirpstack-network-server/internal/models"
+	"github.com/brocaar/chirpstack-network-server/internal/storage"
 	"github.com/brocaar/lorawan"
 )
 
@@ -27,7 +27,7 @@ func (ts *LinkCheckTestSuite) TestLinkCheckReq() {
 		DevEUI:                [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
 		EnabledUplinkChannels: []int{0, 1},
 	}
-	assert.NoError(storage.SaveDeviceSession(ctx, storage.RedisPool(), ds))
+	assert.NoError(storage.SaveDeviceSession(ctx, ds))
 
 	block := storage.MACCommandBlock{
 		CID: lorawan.LinkCheckReq,
